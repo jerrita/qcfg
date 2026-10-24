@@ -1,0 +1,20 @@
+{{define "content"}}
+<h1>Projects</h1>
+<table>
+  <tr><th>Name</th><th>Files</th><th>Updated</th><th>Description</th></tr>
+  {{range .Projects}}
+  <tr><td><a href="/p/{{esc .Name}}">{{.Name}}</a></td><td>{{.FileCount}}</td><td>{{time .UpdatedAt}}</td><td>{{.Description}}</td></tr>
+  {{else}}
+  <tr><td colspan="4" class="muted">No projects yet</td></tr>
+  {{end}}
+</table>
+<form method="post" action="/projects" class="card">
+  <h2>New project</h2>
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <div class="row">
+    <input name="name" placeholder="name" required pattern="[A-Za-z0-9][A-Za-z0-9._\-]*">
+    <input name="description" placeholder="description" class="grow">
+    <button>Create</button>
+  </div>
+</form>
+{{end}}

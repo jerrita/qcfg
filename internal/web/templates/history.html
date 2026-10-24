@@ -1,0 +1,28 @@
+{{define "content"}}
+{{$f := .File}}{{$u := printf "/p/%s/f/%s" (esc .Project) (esc $f.Name)}}
+<h1><a href="/">Projects</a> / <a href="/p/{{esc .Project}}">{{.Project}}</a> / <a href="{{$u}}">{{$f.Name}}</a> / history</h1>
+<form method="get" action="{{$u}}/history" class="row">
+  Diff rev <input name="a" type="number" min="1" value="{{.A}}" required> → <input name="b" type="number" min="1" value="{{.B}}" required>
+  <button>Compare</button>
+</form>
+{{if .Diff}}<pre class="diff">{{.Diff}}</pre>{{end}}
+<table>
+  <tr><th>Rev</th><th>Time</th><th>Device</th><th>Size</th><th>SHA-256</th><th>Message</th><th></th></tr>
+  {{range .Versions}}
+  <tr>
+    <td>{{.Rev}}</td><td>{{time .CreatedAt}}</td><td>{{.Device}}</td><td>{{size .Size}}</td><td><code>{{short .Sha256}}</code></td><td>{{.Message}}</td>
+    <td class="actions">
+      {{if gt .Rev 1}}<a href="{{$u}}/history?a={{dec .Rev}}&b={{.Rev}}">changes</a>{{end}}
+      <a href="{{$u}}/history?a={{.Rev}}&b={{$f.HeadRev}}">diff→head</a>
+      <a href="{{$u}}/raw?rev={{.Rev}}" hx-boost="false" download>download</a>
+      {{if ne .Rev $f.HeadRev}}
+      <form method="post" action="{{$u}}/restore" class="inline" hx-confirm="Restore rev {{.Rev}} as new head?">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="rev" value="{{.Rev}}">
+        <button class="link">restore</button>
+      </form>
+      {{end}}
+    </td>
+  </tr>
+  {{end}}
+</table>
+{{end}}

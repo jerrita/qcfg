@@ -1,0 +1,44 @@
+{{define "content"}}
+{{$f := .File}}{{$u := printf "/p/%s/f/%s" (esc .Project) (esc $f.Name)}}
+<h1><a href="/">Projects</a> / <a href="/p/{{esc .Project}}">{{.Project}}</a> / {{$f.Name}}</h1>
+<p class="muted">rev {{$f.HeadRev}} · {{size $f.Size}} · {{if $f.UpdatedBy}}{{$f.UpdatedBy}} · {{end}}{{time $f.UpdatedAt}} ·
+  <a href="{{$u}}/history">History</a>{{if $f.HeadRev}} · <a href="{{$u}}/raw" hx-boost="false" download>Download</a>{{end}}</p>
+
+<section class="card">
+  <h2>Content</h2>
+  {{if .Text}}
+  <form method="post" action="{{$u}}/content">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="base" value="{{$f.HeadRev}}">
+    <textarea name="content" rows="20" class="code" spellcheck="false">{{.Content}}</textarea>
+    <div class="row"><input name="message" placeholder="message (optional)" class="grow"><button>Save</button></div>
+  </form>
+  {{else}}
+  <p class="muted">Binary file, use download/upload.</p>
+  {{end}}
+  <form method="post" action="{{$u}}/content" enctype="multipart/form-data" class="row">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="base" value="{{$f.HeadRev}}">
+    <input type="file" name="upload" required>
+    <input name="message" placeholder="message (optional)" class="grow">
+    <button>Upload</button>
+  </form>
+</section>
+
+<form method="post" action="{{$u}}/def" class="card">
+  <h2>Definition</h2>
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <div class="grid">
+    <label>Path <input name="path" value="{{$f.Path}}" required></label>
+    <label>Mode <input name="mode" value="{{$f.Mode}}" placeholder="0600"></label>
+    <label>Platforms <input name="platforms" value="{{join $f.Platforms}}" placeholder="empty = all"></label>
+    <label class="wide">Per-OS paths <textarea name="paths" rows="3" placeholder="windows=%APPDATA%/proj-a/config.json">{{pathsText $f.Paths}}</textarea></label>
+  </div>
+  <button>Save definition</button>
+</form>
+
+<form method="post" action="{{$u}}/delete" hx-confirm="Remove {{$f.Name}} from the project?">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <button class="danger">Remove file</button>
+</form>
+{{end}}

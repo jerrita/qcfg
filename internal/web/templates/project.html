@@ -1,0 +1,33 @@
+{{define "content"}}
+{{$p := .Project}}
+<h1><a href="/">Projects</a> / {{$p.Name}}</h1>
+{{if $p.Description}}<p class="muted">{{$p.Description}}</p>{{end}}
+<table>
+  <tr><th>File</th><th>Path</th><th>Rev</th><th>Size</th><th>Updated by</th><th>Updated</th></tr>
+  {{range $p.Files}}
+  <tr>
+    <td><a href="/p/{{esc $p.Name}}/f/{{esc .Name}}">{{.Name}}</a></td>
+    <td><code>{{.Path}}</code>{{range $os, $path := .Paths}}<br><small>{{$os}}: <code>{{$path}}</code></small>{{end}}{{if .Platforms}}<br><small>only: {{join .Platforms}}</small>{{end}}</td>
+    <td>{{.HeadRev}}</td><td>{{size .Size}}</td><td>{{.UpdatedBy}}</td><td>{{time .UpdatedAt}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="6" class="muted">No files yet</td></tr>
+  {{end}}
+</table>
+<form method="post" action="/p/{{esc $p.Name}}/files" class="card">
+  <h2>Add file</h2>
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <div class="grid">
+    <label>Name <input name="name" placeholder="config.json" required></label>
+    <label>Path <input name="path" placeholder="~/.proj-a/config.json" required></label>
+    <label>Mode <input name="mode" placeholder="0600"></label>
+    <label>Platforms <input name="platforms" placeholder="linux,darwin (empty = all)"></label>
+    <label class="wide">Per-OS paths <textarea name="paths" rows="2" placeholder="windows=%APPDATA%/proj-a/config.json"></textarea></label>
+  </div>
+  <button>Add</button>
+</form>
+<form method="post" action="/p/{{esc $p.Name}}/delete" class="danger" hx-confirm="Delete project {{$p.Name}} and all its history?">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <button class="danger">Delete project</button>
+</form>
+{{end}}
