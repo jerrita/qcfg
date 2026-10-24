@@ -1,0 +1,10 @@
+{{define "content"}}
+<h1>Device {{.Device.Name}}</h1>
+<p class="muted">Created {{time .Device.CreatedAt}} · last seen {{time .Device.LastSeenAt}}{{if .Device.LastIP}} from {{.Device.LastIP}}{{end}}{{if .Device.Revoked}} · <span class="err-text">revoked</span>{{end}}</p>
+<form method="post" action="/devices/{{esc .Device.Name}}/access" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <h2>Project access</h2>
+  {{template "scope" .}}
+  <div class="row"><button>Save</button></div>
+</form>
+{{end}}

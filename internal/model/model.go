@@ -42,12 +42,41 @@ type Version struct {
 }
 
 type Device struct {
-	Name       string    `json:"name"`
-	CreatedAt  time.Time `json:"created_at"`
-	LastSeenAt time.Time `json:"last_seen_at"`
-	LastIP     string    `json:"last_ip"`
-	Revoked    bool      `json:"revoked"`
+	Name        string    `json:"name"`
+	CreatedAt   time.Time `json:"created_at"`
+	LastSeenAt  time.Time `json:"last_seen_at"`
+	LastIP      string    `json:"last_ip"`
+	Revoked     bool      `json:"revoked"`
+	AllProjects bool      `json:"all_projects"`
+	Projects    []string  `json:"projects,omitempty"`
 }
+
+type DeviceCodeRequest struct {
+	Name string `json:"name"`
+}
+
+type DeviceCode struct {
+	DeviceCode string `json:"device_code"`
+	UserCode   string `json:"user_code"`
+	ExpiresIn  int    `json:"expires_in"`
+	Interval   int    `json:"interval"`
+}
+
+type DeviceTokenRequest struct {
+	DeviceCode string `json:"device_code"`
+}
+
+type DeviceToken struct {
+	Token  string `json:"token"`
+	Device string `json:"device"`
+}
+
+// Errors returned by the device token endpoint.
+const (
+	AuthPending = "authorization_pending"
+	AuthDenied  = "access_denied"
+	AuthExpired = "expired_token"
+)
 
 type WhoAmI struct {
 	Device string `json:"device"`
@@ -66,6 +95,12 @@ var nameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 // ValidName reports whether s is usable as a project or file name.
 func ValidName(s string) bool { return nameRe.MatchString(s) }
+
+// WebDevice is the device name recorded for changes made in the WebUI.
+const WebDevice = "web"
+
+// ValidDeviceName reports whether s is usable as a device name.
+func ValidDeviceName(s string) bool { return ValidName(s) && s != WebDevice }
 
 // Platforms supported in File.Paths and File.Platforms.
 var Platforms = []string{"linux", "darwin", "windows", "freebsd"}

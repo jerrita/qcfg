@@ -1,17 +1,12 @@
 {{define "content"}}
 <h1>Devices</h1>
-{{if .Token}}
-<div class="card token">
-  <p>Token for <b>{{.NewDevice}}</b>:</p>
-  <pre>{{.Token}}</pre>
-  <p class="muted">On the device run: <code>qcfg auth login</code></p>
-</div>
-{{end}}
 <table>
-  <tr><th>Name</th><th>Created</th><th>Last seen</th><th>Last IP</th><th>Status</th><th></th></tr>
+  <tr><th>Name</th><th>Projects</th><th>Created</th><th>Last seen</th><th>Last IP</th><th>Status</th><th></th></tr>
   {{range .Devices}}
   <tr>
-    <td>{{.Name}}</td><td>{{time .CreatedAt}}</td><td>{{time .LastSeenAt}}</td><td>{{.LastIP}}</td>
+    <td><a href="/devices/{{esc .Name}}">{{.Name}}</a></td>
+    <td>{{if .AllProjects}}all{{else if .Projects}}{{join .Projects}}{{else}}<span class="muted">none</span>{{end}}</td>
+    <td>{{time .CreatedAt}}</td><td>{{time .LastSeenAt}}</td><td>{{.LastIP}}</td>
     <td>{{if .Revoked}}<span class="err-text">revoked</span>{{else}}active{{end}}</td>
     <td class="actions">
       {{if not .Revoked}}
@@ -25,15 +20,8 @@
     </td>
   </tr>
   {{else}}
-  <tr><td colspan="6" class="muted">No devices yet</td></tr>
+  <tr><td colspan="7" class="muted">No devices yet</td></tr>
   {{end}}
 </table>
-<form method="post" action="/devices" class="card">
-  <h2>New device</h2>
-  <input type="hidden" name="csrf" value="{{.CSRF}}">
-  <div class="row">
-    <input name="name" placeholder="laptop" required pattern="[A-Za-z0-9][A-Za-z0-9._\-]*">
-    <button>Create token</button>
-  </div>
-</form>
+<p class="muted">To add a device, run <code>qcfg auth login</code> on it and enter the code at <a href="/activate">Activate</a>.</p>
 {{end}}

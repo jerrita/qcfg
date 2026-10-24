@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,6 +20,9 @@ var (
 	ErrNotFound = errors.New("not found")
 	ErrExists   = errors.New("already exists")
 	ErrConflict = errors.New("conflict")
+	ErrLimit    = errors.New("too many requests")
+	ErrPending  = errors.New("authorization pending")
+	ErrDenied   = errors.New("access denied")
 )
 
 // ConflictError carries the current head revision.
@@ -80,7 +84,25 @@ CREATE TABLE IF NOT EXISTS device (
 	created_at   INTEGER NOT NULL,
 	last_seen_at INTEGER NOT NULL DEFAULT 0,
 	last_ip      TEXT NOT NULL DEFAULT '',
-	revoked      INTEGER NOT NULL DEFAULT 0
+	revoked      INTEGER NOT NULL DEFAULT 0,
+	all_projects INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS device_project (
+	device_id  INTEGER NOT NULL REFERENCES device(id) ON DELETE CASCADE,
+	project_id INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+	PRIMARY KEY(device_id, project_id)
+);
+CREATE TABLE IF NOT EXISTS device_request (
+	id            INTEGER PRIMARY KEY,
+	code_hash     TEXT NOT NULL UNIQUE,
+	user_code     TEXT NOT NULL UNIQUE,
+	name          TEXT NOT NULL,
+	ip            TEXT NOT NULL,
+	status        TEXT NOT NULL DEFAULT 'pending',
+	all_projects  INTEGER NOT NULL DEFAULT 0,
+	projects_json TEXT NOT NULL DEFAULT '[]',
+	created_at    INTEGER NOT NULL,
+	expires_at    INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS setting (
 	key   TEXT PRIMARY KEY,
@@ -512,50 +534,150 @@ func (s *Store) Restore(project, name string, rev int64, device string) (model.V
 
 // ---- devices ----
 
-// CreateDevice registers a device and returns its token.
-func (s *Store) CreateDevice(name string) (string, error) {
-	token := crypto.NewToken()
-	_, err := s.db.Exec(`INSERT INTO device(name, token_hash, created_at) VALUES(?,?,?)`,
-		name, crypto.HashToken(token), now())
-	if isUnique(err) {
-		return "", ErrExists
-	}
-	return token, err
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
 }
 
-func (s *Store) ListDevices() ([]model.Device, error) {
-	rows, err := s.db.Query(`SELECT name, created_at, last_seen_at, last_ip, revoked FROM device ORDER BY name`)
+func grantProjects(db execer, deviceID int64, projects []string) error {
+	for _, p := range projects {
+		if _, err := db.Exec(`INSERT OR IGNORE INTO device_project(device_id, project_id)
+			SELECT ?, id FROM project WHERE name=?`, deviceID, p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) deviceProjects(id int64) ([]string, error) {
+	rows, err := s.db.Query(`SELECT p.name FROM device_project dp JOIN project p ON p.id=dp.project_id
+		WHERE dp.device_id=? ORDER BY p.name`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []model.Device{}
+	var out []string
 	for rows.Next() {
-		var d model.Device
-		var c, l int64
-		if err := rows.Scan(&d.Name, &c, &l, &d.LastIP, &d.Revoked); err != nil {
+		var n string
+		if err := rows.Scan(&n); err != nil {
 			return nil, err
 		}
-		d.CreatedAt, d.LastSeenAt = unix(c), unix(l)
-		out = append(out, d)
+		out = append(out, n)
 	}
 	return out, rows.Err()
 }
 
-// Authenticate resolves a token to a device name and records the access.
-func (s *Store) Authenticate(token, ip string) (string, error) {
-	var id int64
-	var name string
-	err := s.db.QueryRow(`SELECT id, name FROM device WHERE token_hash=? AND revoked=0`, crypto.HashToken(token)).
-		Scan(&id, &name)
+func (s *Store) devices(where string, args ...any) ([]model.Device, error) {
+	rows, err := s.db.Query(`SELECT id, name, created_at, last_seen_at, last_ip, revoked, all_projects FROM device `+
+		where+` ORDER BY name`, args...)
+	if err != nil {
+		return nil, err
+	}
+	out := []model.Device{}
+	var ids []int64
+	for rows.Next() {
+		var d model.Device
+		var id, c, l int64
+		if err := rows.Scan(&id, &d.Name, &c, &l, &d.LastIP, &d.Revoked, &d.AllProjects); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		d.CreatedAt, d.LastSeenAt = unix(c), unix(l)
+		out = append(out, d)
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if !out[i].AllProjects {
+			if out[i].Projects, err = s.deviceProjects(ids[i]); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) ListDevices() ([]model.Device, error) { return s.devices("") }
+
+func (s *Store) GetDevice(name string) (model.Device, error) {
+	ds, err := s.devices("WHERE name=?", name)
+	if err != nil {
+		return model.Device{}, err
+	}
+	if len(ds) == 0 {
+		return model.Device{}, ErrNotFound
+	}
+	return ds[0], nil
+}
+
+// Principal is an authenticated device and the projects it may access.
+type Principal struct {
+	ID          int64
+	Name        string
+	AllProjects bool
+	Projects    []string
+}
+
+func (p *Principal) CanAccess(project string) bool {
+	return p.AllProjects || slices.Contains(p.Projects, project)
+}
+
+// Authenticate resolves a token to a device and records the access.
+func (s *Store) Authenticate(token, ip string) (*Principal, error) {
+	p := &Principal{}
+	err := s.db.QueryRow(`SELECT id, name, all_projects FROM device WHERE token_hash=? AND revoked=0`, crypto.HashToken(token)).
+		Scan(&p.ID, &p.Name, &p.AllProjects)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", ErrNotFound
+		return nil, ErrNotFound
 	}
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	_, err = s.db.Exec(`UPDATE device SET last_seen_at=?, last_ip=? WHERE id=?`, now(), ip, id)
-	return name, err
+	if _, err := s.db.Exec(`UPDATE device SET last_seen_at=?, last_ip=? WHERE id=?`, now(), ip, p.ID); err != nil {
+		return nil, err
+	}
+	if !p.AllProjects {
+		if p.Projects, err = s.deviceProjects(p.ID); err != nil {
+			return nil, err
+		}
+	}
+	return p, nil
+}
+
+// GrantProject adds project to the projects a device may access.
+func (s *Store) GrantProject(deviceID int64, project string) error {
+	return grantProjects(s.db, deviceID, []string{project})
+}
+
+// SetDeviceAccess replaces the projects a device may access.
+func (s *Store) SetDeviceAccess(name string, all bool, projects []string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var id int64
+	err = tx.QueryRow(`SELECT id FROM device WHERE name=?`, name).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE device SET all_projects=? WHERE id=?`, all, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM device_project WHERE device_id=?`, id); err != nil {
+		return err
+	}
+	if !all {
+		if err := grantProjects(tx, id, projects); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) RevokeDevice(name string) error {
@@ -564,4 +686,139 @@ func (s *Store) RevokeDevice(name string) error {
 
 func (s *Store) DeleteDevice(name string) error {
 	return affected(s.db.Exec(`DELETE FROM device WHERE name=?`, name))
+}
+
+// ---- device authorization ----
+
+const (
+	DeviceCodeTTL      = 10 * time.Minute
+	maxPendingRequests = 20
+)
+
+// DeviceRequest is a pending device authorization.
+type DeviceRequest struct {
+	UserCode  string
+	Name      string
+	IP        string
+	ExpiresAt time.Time
+}
+
+// CreateDeviceRequest starts a device authorization for a device named name
+// and returns the secret device code and the user code entered in the WebUI.
+func (s *Store) CreateDeviceRequest(name, ip string) (deviceCode, userCode string, err error) {
+	t := now()
+	if _, err := s.db.Exec(`DELETE FROM device_request WHERE expires_at<=?`, t); err != nil {
+		return "", "", err
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM device_request`).Scan(&n); err != nil {
+		return "", "", err
+	}
+	if n >= maxPendingRequests {
+		return "", "", ErrLimit
+	}
+	deviceCode = crypto.RandomString(32)
+	for range 3 {
+		userCode = crypto.NewUserCode()
+		_, err = s.db.Exec(`INSERT INTO device_request(code_hash, user_code, name, ip, created_at, expires_at)
+			VALUES(?,?,?,?,?,?)`, crypto.HashToken(deviceCode), userCode, name, ip, t, t+int64(DeviceCodeTTL.Seconds()))
+		if !isUnique(err) {
+			break
+		}
+	}
+	return deviceCode, userCode, err
+}
+
+// PendingDeviceRequest returns the unexpired pending request for userCode.
+func (s *Store) PendingDeviceRequest(userCode string) (DeviceRequest, error) {
+	var r DeviceRequest
+	var exp int64
+	err := s.db.QueryRow(`SELECT user_code, name, ip, expires_at FROM device_request
+		WHERE user_code=? AND status='pending' AND expires_at>?`, userCode, now()).
+		Scan(&r.UserCode, &r.Name, &r.IP, &exp)
+	if errors.Is(err, sql.ErrNoRows) {
+		return r, ErrNotFound
+	}
+	r.ExpiresAt = unix(exp)
+	return r, err
+}
+
+// ApproveDeviceRequest approves a pending request; the device is created
+// with name and access when it next polls with its device code.
+func (s *Store) ApproveDeviceRequest(userCode, name string, all bool, projects []string) error {
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM device WHERE name=?`, name).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return ErrExists
+	}
+	if all || projects == nil {
+		projects = []string{}
+	}
+	pj, _ := json.Marshal(projects)
+	return affected(s.db.Exec(`UPDATE device_request SET status='approved', name=?, all_projects=?, projects_json=?
+		WHERE user_code=? AND status='pending' AND expires_at>?`, name, all, string(pj), userCode, now()))
+}
+
+func (s *Store) DenyDeviceRequest(userCode string) error {
+	return affected(s.db.Exec(`UPDATE device_request SET status='denied'
+		WHERE user_code=? AND status='pending' AND expires_at>?`, userCode, now()))
+}
+
+// ClaimDeviceToken exchanges an approved device code for a new device token.
+// It returns ErrPending before approval, ErrDenied after denial and
+// ErrNotFound for unknown or expired codes.
+func (s *Store) ClaimDeviceToken(deviceCode string) (token, name string, err error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", "", err
+	}
+	defer tx.Rollback()
+	var reqID int64
+	var status, pj string
+	var all bool
+	err = tx.QueryRow(`SELECT id, status, name, all_projects, projects_json FROM device_request
+		WHERE code_hash=? AND expires_at>?`, crypto.HashToken(deviceCode), now()).
+		Scan(&reqID, &status, &name, &all, &pj)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", ErrNotFound
+	}
+	if err != nil {
+		return "", "", err
+	}
+	switch status {
+	case "pending":
+		return "", "", ErrPending
+	case "denied":
+		if _, err := tx.Exec(`DELETE FROM device_request WHERE id=?`, reqID); err != nil {
+			return "", "", err
+		}
+		if err := tx.Commit(); err != nil {
+			return "", "", err
+		}
+		return "", "", ErrDenied
+	}
+	token = crypto.NewToken()
+	res, err := tx.Exec(`INSERT INTO device(name, token_hash, created_at, all_projects) VALUES(?,?,?,?)`,
+		name, crypto.HashToken(token), now(), all)
+	if isUnique(err) {
+		return "", "", ErrExists
+	}
+	if err != nil {
+		return "", "", err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return "", "", err
+	}
+	var projects []string
+	_ = json.Unmarshal([]byte(pj), &projects)
+	if err := grantProjects(tx, id, projects); err != nil {
+		return "", "", err
+	}
+	if _, err := tx.Exec(`DELETE FROM device_request WHERE id=?`, reqID); err != nil {
+		return "", "", err
+	}
+	return token, name, tx.Commit()
 }

@@ -94,6 +94,40 @@ func NewToken() string {
 
 func HashToken(token string) string { return Sha256Hex([]byte(token)) }
 
+const userCodeChars = "BCDFGHJKLMNPQRSTVWXZ"
+
+// NewUserCode returns an 8-letter device authorization code as XXXX-XXXX.
+func NewUserCode() string {
+	b := make([]byte, 9)
+	for i := range b {
+		if i == 4 {
+			b[i] = '-'
+			continue
+		}
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(userCodeChars))))
+		if err != nil {
+			panic(err)
+		}
+		b[i] = userCodeChars[n.Int64()]
+	}
+	return string(b)
+}
+
+// NormalizeUserCode uppercases s, drops separators and formats it as XXXX-XXXX.
+func NormalizeUserCode(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(s) {
+		if r >= 'A' && r <= 'Z' {
+			b.WriteRune(r)
+		}
+	}
+	c := b.String()
+	if len(c) != 8 {
+		return c
+	}
+	return c[:4] + "-" + c[4:]
+}
+
 // RandomString returns a URL-safe random string of n bytes of entropy.
 func RandomString(n int) string {
 	return base64.RawURLEncoding.EncodeToString(RandomBytes(n))

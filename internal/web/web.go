@@ -34,7 +34,6 @@ const (
 	sessionTTL  = 7 * 24 * time.Hour
 	maxFailures = 5
 	failWindow  = 15 * time.Minute
-	webDevice   = "web"
 )
 
 //go:embed templates/*.html
@@ -102,9 +101,9 @@ func New(st *store.Store, opts Options) http.Handler {
 		sessions: map[string]session{},
 		failures: map[string][]time.Time{},
 	}
-	for _, p := range []string{"login", "projects", "project", "file", "history", "devices"} {
+	for _, p := range []string{"login", "projects", "project", "file", "history", "devices", "device", "activate"} {
 		w.pages[p] = template.Must(template.New("layout.html").Funcs(funcs).
-			ParseFS(templateFS, "templates/layout.html", "templates/"+p+".html"))
+			ParseFS(templateFS, "templates/layout.html", "templates/scope.html", "templates/"+p+".html"))
 	}
 
 	static, _ := fs.Sub(staticFS, "static")
@@ -128,9 +127,12 @@ func New(st *store.Store, opts Options) http.Handler {
 	auth.HandleFunc("GET /p/{p}/f/{f}/history", w.historyPage)
 	auth.HandleFunc("POST /p/{p}/f/{f}/restore", w.restore)
 	auth.HandleFunc("GET /devices", w.devicesPage)
-	auth.HandleFunc("POST /devices", w.createDevice)
+	auth.HandleFunc("GET /devices/{d}", w.devicePage)
+	auth.HandleFunc("POST /devices/{d}/access", w.setDeviceAccess)
 	auth.HandleFunc("POST /devices/{d}/revoke", w.revokeDevice)
 	auth.HandleFunc("POST /devices/{d}/delete", w.deleteDevice)
+	auth.HandleFunc("GET /activate", w.activatePage)
+	auth.HandleFunc("POST /activate", w.activate)
 	mux.Handle("/", w.requireSession(auth))
 	return mux
 }
@@ -167,7 +169,11 @@ func (w *Web) requireSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		s, ok := w.currentSession(r)
 		if !ok {
-			http.Redirect(rw, r, "/login", http.StatusSeeOther)
+			to := "/login"
+			if r.Method == http.MethodGet {
+				to += "?next=" + url.QueryEscape(r.URL.RequestURI())
+			}
+			http.Redirect(rw, r, to, http.StatusSeeOther)
 			return
 		}
 		if r.Method == http.MethodPost && r.Header.Get("X-CSRF-Token") != s.csrf && formValue(r, "csrf") != s.csrf {
@@ -188,24 +194,33 @@ func formValue(r *http.Request, key string) string {
 	return r.FormValue(key)
 }
 
+// nextURL returns the local path to continue to after login.
+func nextURL(r *http.Request) string {
+	next := r.FormValue("next")
+	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.HasPrefix(next, "/\\") {
+		return "/"
+	}
+	return next
+}
+
 func (w *Web) loginPage(rw http.ResponseWriter, r *http.Request) {
 	if _, ok := w.currentSession(r); ok {
-		http.Redirect(rw, r, "/", http.StatusSeeOther)
+		http.Redirect(rw, r, nextURL(r), http.StatusSeeOther)
 		return
 	}
-	w.render(rw, r, "login", "Login", nil)
+	w.render(rw, r, "login", "Login", map[string]any{"Next": nextURL(r)})
 }
 
 func (w *Web) login(rw http.ResponseWriter, r *http.Request) {
 	ip := server.ClientIP(r)
 	if w.blocked(ip) {
-		w.render(rw, r, "login", "Login", map[string]any{"Err": "Too many failed attempts, try again later"})
+		w.render(rw, r, "login", "Login", map[string]any{"Err": "Too many failed attempts, try again later", "Next": nextURL(r)})
 		return
 	}
 	hash, err := w.store.Setting(PasswordKey)
 	if err != nil || !crypto.VerifyPassword(hash, r.FormValue("password")) {
 		w.fail(ip)
-		w.render(rw, r, "login", "Login", map[string]any{"Err": "Wrong password"})
+		w.render(rw, r, "login", "Login", map[string]any{"Err": "Wrong password", "Next": nextURL(r)})
 		return
 	}
 	id := crypto.RandomString(32)
@@ -217,7 +232,7 @@ func (w *Web) login(rw http.ResponseWriter, r *http.Request) {
 		Name: cookieName, Value: id, Path: "/", HttpOnly: true, Secure: w.opts.SecureOnly,
 		SameSite: http.SameSiteStrictMode, MaxAge: int(sessionTTL.Seconds()),
 	})
-	http.Redirect(rw, r, "/", http.StatusSeeOther)
+	http.Redirect(rw, r, nextURL(r), http.StatusSeeOther)
 }
 
 func (w *Web) logout(rw http.ResponseWriter, r *http.Request) {
@@ -463,7 +478,7 @@ func (w *Web) saveContent(rw http.ResponseWriter, r *http.Request) {
 		back(rw, r, to, "err", "File too large")
 		return
 	}
-	v, created, err := w.store.Put(p, name, parseRev(r.FormValue("base")), data, webDevice, r.FormValue("message"))
+	v, created, err := w.store.Put(p, name, parseRev(r.FormValue("base")), data, model.WebDevice, r.FormValue("message"))
 	if err != nil {
 		back(rw, r, to, "err", errText(err))
 		return
@@ -521,7 +536,7 @@ func (w *Web) historyPage(rw http.ResponseWriter, r *http.Request) {
 func (w *Web) restore(rw http.ResponseWriter, r *http.Request) {
 	p, name := r.PathValue("p"), r.PathValue("f")
 	to := fileURL(p, name) + "/history"
-	v, err := w.store.Restore(p, name, parseRev(r.FormValue("rev")), webDevice)
+	v, err := w.store.Restore(p, name, parseRev(r.FormValue("rev")), model.WebDevice)
 	if err != nil {
 		back(rw, r, to, "err", errText(err))
 		return
@@ -532,35 +547,47 @@ func (w *Web) restore(rw http.ResponseWriter, r *http.Request) {
 // ---- devices ----
 
 func (w *Web) devicesPage(rw http.ResponseWriter, r *http.Request) {
-	w.renderDevices(rw, r, nil)
-}
-
-func (w *Web) renderDevices(rw http.ResponseWriter, r *http.Request, data map[string]any) {
 	ds, err := w.store.ListDevices()
 	if notFound(rw, err) {
 		return
 	}
-	if data == nil {
-		data = map[string]any{}
-	}
-	data["Devices"] = ds
-	w.render(rw, r, "devices", "Devices", data)
+	w.render(rw, r, "devices", "Devices", map[string]any{"Devices": ds})
 }
 
-func (w *Web) createDevice(rw http.ResponseWriter, r *http.Request) {
-	name := strings.TrimSpace(r.FormValue("name"))
-	if !model.ValidName(name) || name == webDevice {
-		back(rw, r, "/devices", "err", "Invalid device name")
-		return
-	}
-	token, err := w.store.CreateDevice(name)
+// scopeData returns template data for the project access form.
+func (w *Web) scopeData(all bool, selected []string) (map[string]any, error) {
+	ps, err := w.store.ListProjects()
 	if err != nil {
-		back(rw, r, "/devices", "err", errText(err))
+		return nil, err
+	}
+	sel := map[string]bool{}
+	for _, p := range selected {
+		sel[p] = true
+	}
+	return map[string]any{"All": all, "Projects": ps, "Selected": sel}, nil
+}
+
+func (w *Web) devicePage(rw http.ResponseWriter, r *http.Request) {
+	d, err := w.store.GetDevice(r.PathValue("d"))
+	if notFound(rw, err) {
 		return
 	}
-	data := map[string]any{"Msg": "Device created. Copy the token now, it will not be shown again."}
-	data["NewDevice"], data["Token"] = name, token
-	w.renderDevices(rw, r, data)
+	data, err := w.scopeData(d.AllProjects, d.Projects)
+	if notFound(rw, err) {
+		return
+	}
+	data["Device"] = d
+	w.render(rw, r, "device", "Device "+d.Name, data)
+}
+
+func (w *Web) setDeviceAccess(rw http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("d")
+	to := "/devices/" + url.PathEscape(name)
+	if err := w.store.SetDeviceAccess(name, r.FormValue("all") != "", r.Form["project"]); err != nil {
+		back(rw, r, to, "err", errText(err))
+		return
+	}
+	back(rw, r, to, "msg", "Access saved")
 }
 
 func (w *Web) revokeDevice(rw http.ResponseWriter, r *http.Request) {
@@ -577,4 +604,58 @@ func (w *Web) deleteDevice(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	back(rw, r, "/devices", "msg", "Device deleted")
+}
+
+// ---- device activation ----
+
+func (w *Web) activatePage(rw http.ResponseWriter, r *http.Request) {
+	w.renderActivate(rw, r, r.URL.Query().Get("code"), "")
+}
+
+// renderActivate shows the code entry form, or the pending request for code.
+func (w *Web) renderActivate(rw http.ResponseWriter, r *http.Request, code, errMsg string) {
+	if code == "" {
+		w.render(rw, r, "activate", "Activate device", map[string]any{"Err": errMsg})
+		return
+	}
+	req, err := w.store.PendingDeviceRequest(crypto.NormalizeUserCode(code))
+	if errors.Is(err, store.ErrNotFound) {
+		w.render(rw, r, "activate", "Activate device", map[string]any{"Err": "Code not found or expired", "Code": code})
+		return
+	}
+	if notFound(rw, err) {
+		return
+	}
+	data, err := w.scopeData(false, nil)
+	if notFound(rw, err) {
+		return
+	}
+	data["Request"], data["Err"] = req, errMsg
+	w.render(rw, r, "activate", "Activate device", data)
+}
+
+func (w *Web) activate(rw http.ResponseWriter, r *http.Request) {
+	code := crypto.NormalizeUserCode(r.FormValue("code"))
+	if r.FormValue("action") == "deny" {
+		if err := w.store.DenyDeviceRequest(code); err != nil {
+			w.renderActivate(rw, r, code, errText(err))
+			return
+		}
+		back(rw, r, "/devices", "msg", "Request denied")
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	if !model.ValidDeviceName(name) {
+		w.renderActivate(rw, r, code, "Invalid device name")
+		return
+	}
+	if err := w.store.ApproveDeviceRequest(code, name, r.FormValue("all") != "", r.Form["project"]); err != nil {
+		msg := errText(err)
+		if errors.Is(err, store.ErrExists) {
+			msg = "Device name already in use"
+		}
+		w.renderActivate(rw, r, code, msg)
+		return
+	}
+	back(rw, r, "/devices", "msg", fmt.Sprintf("Device %s approved", name))
 }

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -34,18 +35,20 @@ func New(st *store.Store, opts Options, web http.Handler) http.Handler {
 	api.HandleFunc("GET /api/v1/whoami", s.whoami)
 	api.HandleFunc("GET /api/v1/projects", s.listProjects)
 	api.HandleFunc("POST /api/v1/projects", s.createProject)
-	api.HandleFunc("GET /api/v1/projects/{p}", s.getProject)
-	api.HandleFunc("PATCH /api/v1/projects/{p}", s.updateProject)
-	api.HandleFunc("DELETE /api/v1/projects/{p}", s.deleteProject)
-	api.HandleFunc("POST /api/v1/projects/{p}/files", s.createFile)
-	api.HandleFunc("PATCH /api/v1/projects/{p}/files/{f}", s.updateFile)
-	api.HandleFunc("DELETE /api/v1/projects/{p}/files/{f}", s.deleteFile)
-	api.HandleFunc("GET /api/v1/projects/{p}/files/{f}/raw", s.getRaw)
-	api.HandleFunc("PUT /api/v1/projects/{p}/files/{f}/raw", s.putRaw)
-	api.HandleFunc("GET /api/v1/projects/{p}/files/{f}/versions", s.versions)
-	api.HandleFunc("POST /api/v1/projects/{p}/files/{f}/restore", s.restore)
+	api.HandleFunc("GET /api/v1/projects/{p}", s.scoped(s.getProject))
+	api.HandleFunc("PATCH /api/v1/projects/{p}", s.scoped(s.updateProject))
+	api.HandleFunc("DELETE /api/v1/projects/{p}", s.scoped(s.deleteProject))
+	api.HandleFunc("POST /api/v1/projects/{p}/files", s.scoped(s.createFile))
+	api.HandleFunc("PATCH /api/v1/projects/{p}/files/{f}", s.scoped(s.updateFile))
+	api.HandleFunc("DELETE /api/v1/projects/{p}/files/{f}", s.scoped(s.deleteFile))
+	api.HandleFunc("GET /api/v1/projects/{p}/files/{f}/raw", s.scoped(s.getRaw))
+	api.HandleFunc("PUT /api/v1/projects/{p}/files/{f}/raw", s.scoped(s.putRaw))
+	api.HandleFunc("GET /api/v1/projects/{p}/files/{f}/versions", s.scoped(s.versions))
+	api.HandleFunc("POST /api/v1/projects/{p}/files/{f}/restore", s.scoped(s.restore))
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/device/code", s.deviceCode)
+	mux.HandleFunc("POST /api/v1/device/token", s.deviceToken)
 	mux.Handle("/api/", s.auth(api))
 	mux.Handle("/", web)
 	return mux
@@ -67,16 +70,31 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			writeErr(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
-		device, err := s.store.Authenticate(token, ClientIP(r))
+		p, err := s.store.Authenticate(token, ClientIP(r))
 		if err != nil {
 			writeErr(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, device)))
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, p)))
 	})
 }
 
-func device(r *http.Request) string { return r.Context().Value(ctxKey{}).(string) }
+func principal(r *http.Request) *store.Principal {
+	return r.Context().Value(ctxKey{}).(*store.Principal)
+}
+
+func device(r *http.Request) string { return principal(r).Name }
+
+// scoped rejects requests for projects the device may not access.
+func (s *Server) scoped(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !principal(r).CanAccess(r.PathValue("p")) {
+			writeErr(w, http.StatusNotFound, "not found")
+			return
+		}
+		next(w, r)
+	}
+}
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -97,6 +115,8 @@ func storeErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusNotFound, "not found")
 	case errors.Is(err, store.ErrExists):
 		writeErr(w, http.StatusConflict, "already exists")
+	case errors.Is(err, store.ErrLimit):
+		writeErr(w, http.StatusTooManyRequests, "too many requests")
 	default:
 		log.Printf("error: %v", err)
 		writeErr(w, http.StatusInternalServerError, "internal error")
@@ -111,6 +131,48 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
+func (s *Server) deviceCode(w http.ResponseWriter, r *http.Request) {
+	var req model.DeviceCodeRequest
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if !model.ValidDeviceName(req.Name) {
+		writeErr(w, http.StatusBadRequest, "invalid device name")
+		return
+	}
+	code, user, err := s.store.CreateDeviceRequest(req.Name, ClientIP(r))
+	if err != nil {
+		storeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, model.DeviceCode{
+		DeviceCode: code,
+		UserCode:   user,
+		ExpiresIn:  int(store.DeviceCodeTTL.Seconds()),
+		Interval:   5,
+	})
+}
+
+func (s *Server) deviceToken(w http.ResponseWriter, r *http.Request) {
+	var req model.DeviceTokenRequest
+	if !readJSON(w, r, &req) {
+		return
+	}
+	token, name, err := s.store.ClaimDeviceToken(req.DeviceCode)
+	switch {
+	case errors.Is(err, store.ErrPending):
+		writeErr(w, http.StatusBadRequest, model.AuthPending)
+	case errors.Is(err, store.ErrDenied):
+		writeErr(w, http.StatusBadRequest, model.AuthDenied)
+	case errors.Is(err, store.ErrNotFound):
+		writeErr(w, http.StatusBadRequest, model.AuthExpired)
+	case err != nil:
+		storeErr(w, err)
+	default:
+		writeJSON(w, http.StatusOK, model.DeviceToken{Token: token, Device: name})
+	}
+}
+
 func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, model.WhoAmI{Device: device(r)})
 }
@@ -121,6 +183,8 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, err)
 		return
 	}
+	pr := principal(r)
+	ps = slices.DeleteFunc(ps, func(p model.Project) bool { return !pr.CanAccess(p.Name) })
 	writeJSON(w, http.StatusOK, ps)
 }
 
@@ -136,6 +200,12 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.CreateProject(p.Name, p.Description); err != nil {
 		storeErr(w, err)
 		return
+	}
+	if pr := principal(r); !pr.AllProjects {
+		if err := s.store.GrantProject(pr.ID, p.Name); err != nil {
+			storeErr(w, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusCreated, p)
 }

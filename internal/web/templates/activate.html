@@ -1,0 +1,24 @@
+{{define "content"}}
+<h1>Activate device</h1>
+{{if .Request}}
+<form method="post" action="/activate" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <input type="hidden" name="code" value="{{.Request.UserCode}}">
+  <p>Code <b>{{.Request.UserCode}}</b> from {{.Request.IP}}, expires {{time .Request.ExpiresAt}}</p>
+  <label>Device name <input name="name" value="{{.Request.Name}}" required pattern="[A-Za-z0-9][A-Za-z0-9._\-]*"></label>
+  <h2>Project access</h2>
+  {{template "scope" .}}
+  <div class="row">
+    <button name="action" value="approve">Approve</button>
+    <button name="action" value="deny" class="danger">Deny</button>
+  </div>
+</form>
+{{else}}
+<form method="get" action="/activate" class="card narrow">
+  <label>Code shown by <code>qcfg auth login</code>
+    <input name="code" value="{{.Code}}" placeholder="XXXX-XXXX" autofocus required autocomplete="off">
+  </label>
+  <button>Continue</button>
+</form>
+{{end}}
+{{end}}

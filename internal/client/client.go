@@ -17,7 +17,12 @@ import (
 	"github.com/jerrita/qcfg/internal/model"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound    = errors.New("not found")
+	ErrAuthPending = errors.New("authorization pending")
+	ErrAuthDenied  = errors.New("access denied")
+	ErrAuthExpired = errors.New("code expired")
+)
 
 // ConflictError is returned when the server head differs from the base rev.
 type ConflictError struct{ HeadRev int64 }
@@ -49,7 +54,9 @@ func (c *Client) do(method, path string, body io.Reader, hdr map[string]string) 
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 	for k, v := range hdr {
 		req.Header.Set(k, v)
 	}
@@ -68,6 +75,12 @@ func (c *Client) do(method, path string, body io.Reader, hdr map[string]string) 
 		return nil, ErrNotFound
 	case resp.StatusCode == http.StatusConflict && e.HeadRev > 0:
 		return nil, &ConflictError{HeadRev: e.HeadRev}
+	case e.Error == model.AuthPending:
+		return nil, ErrAuthPending
+	case e.Error == model.AuthDenied:
+		return nil, ErrAuthDenied
+	case e.Error == model.AuthExpired:
+		return nil, ErrAuthExpired
 	case e.Error != "":
 		return nil, fmt.Errorf("server: %s", e.Error)
 	default:
@@ -95,6 +108,18 @@ func (c *Client) json(method, path string, in, out any) error {
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// DeviceCode starts a device authorization for a device named name.
+func (c *Client) DeviceCode(name string) (model.DeviceCode, error) {
+	var d model.DeviceCode
+	return d, c.json("POST", "/device/code", model.DeviceCodeRequest{Name: name}, &d)
+}
+
+// DeviceToken polls for the token of an approved device code.
+func (c *Client) DeviceToken(deviceCode string) (model.DeviceToken, error) {
+	var t model.DeviceToken
+	return t, c.json("POST", "/device/token", model.DeviceTokenRequest{DeviceCode: deviceCode}, &t)
 }
 
 func (c *Client) WhoAmI() (model.WhoAmI, error) {

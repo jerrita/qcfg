@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -17,46 +18,60 @@ import (
 func authCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "auth", Short: "Manage server credentials"}
 
-	var server, token string
+	var server, name string
 	login := &cobra.Command{
 		Use:   "login",
-		Short: "Log in with a device token created in the WebUI",
+		Short: "Log in by approving this device in the WebUI",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := state.LoadConfig()
 			if err != nil {
 				return err
 			}
-			in := bufio.NewReader(os.Stdin)
 			if server == "" {
-				if server, err = prompt(in, "Server URL", cfg.Server); err != nil {
-					return err
-				}
-			}
-			if token == "" {
-				if token, err = promptSecret(in, "Token"); err != nil {
+				if server, err = prompt(bufio.NewReader(os.Stdin), "Server URL", cfg.Server); err != nil {
 					return err
 				}
 			}
 			server = strings.TrimRight(strings.TrimSpace(server), "/")
-			token = strings.TrimSpace(token)
-			if server == "" || token == "" {
-				return errors.New("server and token are required")
+			if server == "" {
+				return errors.New("server is required")
 			}
-			who, err := client.New(server, token).WhoAmI()
+			if name == "" {
+				if name, err = os.Hostname(); err != nil {
+					return err
+				}
+			}
+			c := client.New(server, "")
+			dc, err := c.DeviceCode(name)
 			if err != nil {
 				return err
 			}
-			cfg.Server, cfg.Token, cfg.Device = server, token, who.Device
-			if err := state.SaveConfig(cfg); err != nil {
-				return err
+			fmt.Printf("Open %s/activate and enter code: %s\nWaiting for approval...\n", server, dc.UserCode)
+			for {
+				time.Sleep(time.Duration(dc.Interval) * time.Second)
+				tok, err := c.DeviceToken(dc.DeviceCode)
+				switch {
+				case errors.Is(err, client.ErrAuthPending):
+					continue
+				case errors.Is(err, client.ErrAuthDenied):
+					return errors.New("login request denied")
+				case errors.Is(err, client.ErrAuthExpired):
+					return errors.New("code expired, run `qcfg auth login` again")
+				case err != nil:
+					return err
+				}
+				cfg.Server, cfg.Token, cfg.Device = server, tok.Token, tok.Device
+				if err := state.SaveConfig(cfg); err != nil {
+					return err
+				}
+				fmt.Printf("Logged in to %s as device %q\n", server, tok.Device)
+				return nil
 			}
-			fmt.Printf("Logged in to %s as device %q\n", server, who.Device)
-			return nil
 		},
 	}
 	login.Flags().StringVar(&server, "server", "", "server URL")
-	login.Flags().StringVar(&token, "token", "", "device token")
+	login.Flags().StringVar(&name, "name", "", "device name (default: hostname)")
 
 	logout := &cobra.Command{
 		Use:   "logout",

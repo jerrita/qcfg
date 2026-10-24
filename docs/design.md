@@ -53,7 +53,14 @@ version   (id, file_id, rev, sha256, size, blob_id,
 
 blob      (id, sha256 UNIQUE, nonce, ciphertext)     -- 内容寻址，去重
 
-device    (id, name UNIQUE, token_hash, created_at, last_seen_at, last_ip, revoked)
+device    (id, name UNIQUE, token_hash, created_at, last_seen_at, last_ip, revoked,
+           all_projects)
+
+device_project (device_id, project_id)               -- 设备可访问的项目
+
+device_request (id, code_hash UNIQUE, user_code UNIQUE, name, ip, status,
+                all_projects, projects_json, created_at, expires_at)
+                                                     -- 待审批的登录请求
 
 setting   (key, value)                               -- admin 密码哈希等
 ```
@@ -62,6 +69,7 @@ setting   (key, value)                               -- admin 密码哈希等
 - `sha256`：明文哈希，用于客户端比对；`blob` 按明文哈希去重，内容以 AES-GCM 加密存储
 - 文件权限只记录在文件定义的 `mode` 中
 - `version.device` 记录设备名，WebUI 修改记为 `web`
+- 设备访问范围：`all_projects=1` 表示全部项目（含之后新建的），否则仅限 `device_project` 中的项目
 - 删除文件为软删除，历史保留；同名重新添加时恢复并沿用历史
 
 ### 3.2 文件定义
@@ -137,7 +145,7 @@ qcfg diff proj-a/config.json            # 查看差异后手动编辑，再 --ou
 ## 5. CLI
 
 ```
-qcfg auth login [--server URL] [--token TOKEN]
+qcfg auth login [--server URL] [--name NAME]
 qcfg auth logout
 qcfg auth status
 
@@ -165,13 +173,24 @@ qcfg serve passwd                # 设置 WebUI 管理员密码
 - `--force`：跳过冲突检查，强制覆盖
 - 全局参数：`--dry-run`、`--json`（机器可读输出）
 
-`auth login` 流程：在 WebUI「设备」页创建设备获得一次性展示的 token，在新设备执行 `qcfg auth login`，交互输入服务器地址与 token；客户端调用 `GET /api/v1/whoami` 校验后写入配置，设备名取自服务端。
+`auth login` 流程（device code）：
+
+1. 客户端调用 `POST /device/code` 提交设备名（默认 hostname），获得私密的 device code 与 8 位用户码（`XXXX-XXXX`）
+2. 终端提示打开 `<server>/activate` 并输入用户码
+3. 管理员在该页面输入用户码，确认设备名（可修改）与可访问项目后批准或拒绝
+4. 客户端按 `interval` 轮询 `POST /device/token`，批准后获得 token 写入配置；请求 10 分钟后过期
 
 ## 6. API
 
-所有接口前缀 `/api/v1`，鉴权头 `Authorization: Bearer qcfg_xxx`，JSON 编码；文件内容以 base64 放在 JSON 中，或通过 `/raw` 以二进制传输。
+所有接口前缀 `/api/v1`，除 `/device/*` 外鉴权头 `Authorization: Bearer qcfg_xxx`，JSON 编码；文件内容以 base64 放在 JSON 中，或通过 `/raw` 以二进制传输。
+
+设备只能访问被授权的项目，其余项目在列表中不出现、单独访问返回 `404`；设备新建的项目自动加入其可访问范围。
 
 ```
+POST   /device/code                           {name} → {device_code, user_code, expires_in, interval}
+POST   /device/token                          {device_code} → {token, device}
+                                              400 authorization_pending / access_denied / expired_token
+
 GET    /whoami
 
 GET    /projects
@@ -208,6 +227,7 @@ data/
 ### 7.2 安全
 
 - token：`qcfg_` + 32 字节随机数（base62），服务端只存 SHA-256；可在 WebUI 吊销
+- device code：32 字节随机数，服务端只存 SHA-256；用户码取自 20 个辅音字母，需管理员登录后输入；同时待审批的请求数上限 20
 - WebUI：管理员密码（argon2id），首次启动随机生成并打印到日志；HttpOnly + SameSite=Strict 会话 cookie（会话保存在内存，重启后需重新登录），表单 CSRF token，同一 IP 15 分钟内失败 5 次即限速
 - 传输：内置 `--tls-cert/--tls-key`，或置于反向代理之后
 - 限制：单文件大小上限（默认 4 MiB），每文件保留版本数上限（默认 50，0 为不限）
@@ -221,7 +241,8 @@ data/
 | 项目详情 | 文件表格：名称、路径（含 OS 覆盖）、head rev、更新设备与时间；新增/编辑路径定义 |
 | 文件 | 文本文件在线查看与编辑（保存即新版本）；二进制文件上传/下载 |
 | 历史 | 版本列表、任意两版本 diff、恢复 |
-| 设备 | 创建设备并展示 token、最近在线时间与 IP、吊销 |
+| 激活 | 输入用户码，确认设备名与可访问项目，批准或拒绝 |
+| 设备 | 设备列表、可访问项目、最近在线时间与 IP、吊销；单个设备页修改可访问项目 |
 
 ## 9. 代码结构
 

@@ -33,4 +33,5 @@ form.inline { display: inline; }
 .msg { padding: 8px 12px; border-radius: 6px; background: #dafbe1; color: var(--green); }
 .err { padding: 8px 12px; border-radius: 6px; background: #ffebe9; color: var(--red); }
 .err-text { color: var(--red); }
-.token pre { user-select: all; }
+.check { flex-direction: row; align-items: center; gap: 6px; color: var(--fg); }
+.checks { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 8px 0 0 22px; }
