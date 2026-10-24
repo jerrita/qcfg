@@ -18,6 +18,9 @@ import (
 	"github.com/jerrita/qcfg/internal/web"
 )
 
+// adminPasswordEnv sets the WebUI admin password on every start when non-empty.
+const adminPasswordEnv = "QCFG_ADMIN_PASSWORD"
+
 func openStore(dataDir string) (*store.Store, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, err
@@ -48,7 +51,14 @@ func serveCmd() *cobra.Command {
 			defer st.Close()
 			st.KeepVersions = keep
 
-			if _, err := st.Setting(web.PasswordKey); errors.Is(err, store.ErrNotFound) {
+			if pw := os.Getenv(adminPasswordEnv); pw != "" {
+				if len(pw) < 8 {
+					return fmt.Errorf("%s must be at least 8 characters", adminPasswordEnv)
+				}
+				if err := st.SetSetting(web.PasswordKey, crypto.HashPassword(pw)); err != nil {
+					return err
+				}
+			} else if _, err := st.Setting(web.PasswordKey); errors.Is(err, store.ErrNotFound) {
 				pw := crypto.RandomString(12)
 				if err := st.SetSetting(web.PasswordKey, crypto.HashPassword(pw)); err != nil {
 					return err

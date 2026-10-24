@@ -18,6 +18,29 @@ docker run -d --name qcfg -p 8080:8080 -v qcfg-data:/data ghcr.io/jerrita/qcfg:l
 docker logs qcfg   # 首次启动打印随机生成的 WebUI 管理员密码
 ```
 
+Docker Compose，`compose.yaml`：
+
+```yaml
+services:
+  qcfg:
+    image: ghcr.io/jerrita/qcfg:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      QCFG_ADMIN_PASSWORD: ${QCFG_ADMIN_PASSWORD}   # WebUI 管理员密码，至少 8 位
+    volumes:
+      - qcfg-data:/data
+
+volumes:
+  qcfg-data:
+```
+
+```sh
+echo 'QCFG_ADMIN_PASSWORD=change-me-please' > .env
+docker compose up -d
+```
+
 或直接运行：
 
 ```sh
@@ -32,7 +55,7 @@ qcfg serve --listen :8080 --data ./data
 | `--max-file-size` | `4194304` | 单文件大小上限（字节） |
 | `--keep-versions` | `50` | 每个文件保留的版本数，`0` 为不限 |
 
-- 修改管理员密码：`qcfg serve passwd --data ./data`（Docker 中为 `docker exec -it qcfg /qcfg serve passwd --data /data`）
+- 管理员密码：设置环境变量 `QCFG_ADMIN_PASSWORD` 后每次启动以其为准；未设置时首次启动随机生成，可用 `qcfg serve passwd --data ./data` 修改（Docker 中为 `docker exec -it qcfg /qcfg serve passwd --data /data`）
 - 加密密钥可由环境变量 `QCFG_MASTER_KEY`（64 位十六进制）提供；备份时需同时备份数据库与密钥
 
 ## 安装客户端
