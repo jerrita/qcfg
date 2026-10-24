@@ -60,6 +60,20 @@ qcfg serve --listen :8080 --data ./data
 
 ## 安装客户端
 
+一键安装最新 release（Linux x64/arm64、macOS arm64），默认安装到 `~/.local/bin`，可用 `QCFG_INSTALL_DIR` 指定：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jerrita/qcfg/master/scripts/install.sh | sh
+```
+
+Windows x64（PowerShell），默认安装到 `%LOCALAPPDATA%\Programs\qcfg` 并加入用户 PATH：
+
+```powershell
+irm https://raw.githubusercontent.com/jerrita/qcfg/master/scripts/install.ps1 | iex
+```
+
+也可从 [Releases](https://github.com/jerrita/qcfg/releases) 手动下载，或：
+
 ```sh
 go install github.com/jerrita/qcfg/cmd/qcfg@latest
 ```
