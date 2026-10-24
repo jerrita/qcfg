@@ -692,7 +692,7 @@ func (s *Store) DeleteDevice(name string) error {
 
 const (
 	DeviceCodeTTL      = 10 * time.Minute
-	maxPendingRequests = 20
+	maxPendingRequests = 3 // per client IP
 )
 
 // DeviceRequest is a pending device authorization.
@@ -711,7 +711,7 @@ func (s *Store) CreateDeviceRequest(name, ip string) (deviceCode, userCode strin
 		return "", "", err
 	}
 	var n int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM device_request`).Scan(&n); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM device_request WHERE ip=?`, ip).Scan(&n); err != nil {
 		return "", "", err
 	}
 	if n >= maxPendingRequests {

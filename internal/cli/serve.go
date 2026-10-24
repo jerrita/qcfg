@@ -62,7 +62,14 @@ func serveCmd() *cobra.Command {
 				MaxFileSize: maxSize,
 				SecureOnly:  certFile != "",
 			}))
-			srv := &http.Server{Addr: listen, Handler: h, ReadHeaderTimeout: 10 * time.Second}
+			srv := &http.Server{
+				Addr:              listen,
+				Handler:           h,
+				ReadHeaderTimeout: 10 * time.Second,
+				ReadTimeout:       2 * time.Minute,
+				WriteTimeout:      2 * time.Minute,
+				IdleTimeout:       2 * time.Minute,
+			}
 			log.Printf("qcfg listening on %s (data: %s)", listen, dataDir)
 			if certFile != "" {
 				return srv.ListenAndServeTLS(certFile, keyFile)

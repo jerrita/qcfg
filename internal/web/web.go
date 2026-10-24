@@ -4,6 +4,7 @@ package web
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"embed"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -34,6 +36,7 @@ const (
 	sessionTTL  = 7 * 24 * time.Hour
 	maxFailures = 5
 	failWindow  = 15 * time.Minute
+	maxVerifies = 2 // concurrent password checks, each uses 64 MiB
 )
 
 //go:embed templates/*.html
@@ -60,6 +63,7 @@ type Web struct {
 	mu       sync.Mutex
 	sessions map[string]session
 	failures map[string][]time.Time
+	verify   chan struct{}
 }
 
 var funcs = template.FuncMap{
@@ -100,6 +104,7 @@ func New(st *store.Store, opts Options) http.Handler {
 		pages:    map[string]*template.Template{},
 		sessions: map[string]session{},
 		failures: map[string][]time.Time{},
+		verify:   make(chan struct{}, maxVerifies),
 	}
 	for _, p := range []string{"login", "projects", "project", "file", "history", "devices", "device", "activate"} {
 		w.pages[p] = template.Must(template.New("layout.html").Funcs(funcs).
@@ -176,13 +181,18 @@ func (w *Web) requireSession(next http.Handler) http.Handler {
 			http.Redirect(rw, r, to, http.StatusSeeOther)
 			return
 		}
-		if r.Method == http.MethodPost && r.Header.Get("X-CSRF-Token") != s.csrf && formValue(r, "csrf") != s.csrf {
-			http.Error(rw, "invalid csrf token", http.StatusForbidden)
-			return
+		if r.Method == http.MethodPost {
+			r.Body = http.MaxBytesReader(rw, r.Body, w.opts.MaxFileSize+1<<20)
+			if !sameToken(r.Header.Get("X-CSRF-Token"), s.csrf) && !sameToken(formValue(r, "csrf"), s.csrf) {
+				http.Error(rw, "invalid csrf token", http.StatusForbidden)
+				return
+			}
 		}
 		next.ServeHTTP(rw, r.WithContext(withSession(r, s)))
 	})
 }
+
+func sameToken(a, b string) bool { return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1 }
 
 // formValue reads a form field from urlencoded or multipart bodies.
 func formValue(r *http.Request, key string) string {
@@ -212,13 +222,21 @@ func (w *Web) loginPage(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *Web) login(rw http.ResponseWriter, r *http.Request) {
-	ip := server.ClientIP(r)
+	r.Body = http.MaxBytesReader(rw, r.Body, 64<<10)
+	ip := limitKey(server.ClientIP(r))
 	if w.blocked(ip) {
 		w.render(rw, r, "login", "Login", map[string]any{"Err": "Too many failed attempts, try again later", "Next": nextURL(r)})
 		return
 	}
+	select {
+	case w.verify <- struct{}{}:
+	case <-r.Context().Done():
+		return
+	}
 	hash, err := w.store.Setting(PasswordKey)
-	if err != nil || !crypto.VerifyPassword(hash, r.FormValue("password")) {
+	ok := err == nil && crypto.VerifyPassword(hash, r.FormValue("password"))
+	<-w.verify
+	if !ok {
 		w.fail(ip)
 		w.render(rw, r, "login", "Login", map[string]any{"Err": "Wrong password", "Next": nextURL(r)})
 		return
@@ -226,6 +244,11 @@ func (w *Web) login(rw http.ResponseWriter, r *http.Request) {
 	id := crypto.RandomString(32)
 	w.mu.Lock()
 	delete(w.failures, ip)
+	for k, s := range w.sessions {
+		if time.Now().After(s.expires) {
+			delete(w.sessions, k)
+		}
+	}
 	w.sessions[id] = session{csrf: crypto.RandomString(24), expires: time.Now().Add(sessionTTL)}
 	w.mu.Unlock()
 	http.SetCookie(rw, &http.Cookie{
@@ -249,12 +272,26 @@ func (w *Web) blocked(ip string) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	cut := time.Now().Add(-failWindow)
-	fs := w.failures[ip]
-	for len(fs) > 0 && fs[0].Before(cut) {
-		fs = fs[1:]
+	for k, fs := range w.failures {
+		for len(fs) > 0 && fs[0].Before(cut) {
+			fs = fs[1:]
+		}
+		if len(fs) == 0 {
+			delete(w.failures, k)
+		} else {
+			w.failures[k] = fs
+		}
 	}
-	w.failures[ip] = fs
-	return len(fs) >= maxFailures
+	return len(w.failures[ip]) >= maxFailures
+}
+
+// limitKey groups IPv6 addresses by /64 for login rate limiting.
+func limitKey(ip string) string {
+	a := net.ParseIP(ip)
+	if a == nil || a.To4() != nil {
+		return ip
+	}
+	return a.Mask(net.CIDRMask(64, 128)).String() + "/64"
 }
 
 func (w *Web) fail(ip string) {
@@ -460,7 +497,6 @@ func (w *Web) deleteFile(rw http.ResponseWriter, r *http.Request) {
 func (w *Web) saveContent(rw http.ResponseWriter, r *http.Request) {
 	p, name := r.PathValue("p"), r.PathValue("f")
 	to := fileURL(p, name)
-	r.Body = http.MaxBytesReader(rw, r.Body, w.opts.MaxFileSize+1<<20)
 	var data []byte
 	if up, _, err := r.FormFile("upload"); err == nil {
 		defer up.Close()
