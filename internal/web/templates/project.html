@@ -26,8 +26,8 @@
   </div>
   <button>Add</button>
 </form>
-<form method="post" action="/p/{{esc $p.Name}}/delete" class="danger" hx-confirm="Delete project {{$p.Name}} and all its history?">
+{{if .Admin}}<form method="post" action="/p/{{esc $p.Name}}/delete" class="danger" hx-confirm="Delete project {{$p.Name}} and all its history?">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <button class="danger">Delete project</button>
-</form>
+</form>{{end}}
 {{end}}

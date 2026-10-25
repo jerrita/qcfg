@@ -51,21 +51,17 @@ func serveCmd() *cobra.Command {
 			defer st.Close()
 			st.KeepVersions = keep
 
-			if pw := os.Getenv(adminPasswordEnv); pw != "" {
-				if len(pw) < 8 {
-					return fmt.Errorf("%s must be at least 8 characters", adminPasswordEnv)
-				}
-				if err := st.SetSetting(web.PasswordKey, crypto.HashPassword(pw)); err != nil {
-					return err
-				}
-			} else if _, err := st.Setting(web.PasswordKey); errors.Is(err, store.ErrNotFound) {
-				pw := crypto.RandomString(12)
-				if err := st.SetSetting(web.PasswordKey, crypto.HashPassword(pw)); err != nil {
-					return err
-				}
-				log.Printf("generated WebUI admin password: %s (change with `qcfg serve passwd`)", pw)
-			} else if err != nil {
+			open, err := st.RegistrationOpen()
+			if err != nil {
 				return err
+			}
+			if pw := os.Getenv(adminPasswordEnv); pw != "" && !open {
+				if err := st.SetAdminPassword(pw); err != nil {
+					return fmt.Errorf("%s: %w", adminPasswordEnv, err)
+				}
+			}
+			if open {
+				log.Print("open the WebUI to register the administrator account")
 			}
 
 			h := server.New(st, server.Options{MaxFileSize: maxSize}, web.New(st, web.Options{
@@ -119,7 +115,7 @@ func serveCmd() *cobra.Command {
 			if len(pw) < 8 {
 				return errors.New("password must be at least 8 characters")
 			}
-			if err := st.SetSetting(web.PasswordKey, crypto.HashPassword(pw)); err != nil {
+			if err := st.SetAdminPassword(pw); err != nil {
 				return err
 			}
 			fmt.Println("password updated")

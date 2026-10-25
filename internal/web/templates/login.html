@@ -2,7 +2,8 @@
 <form method="post" action="/login" class="card narrow">
   <h1>Login</h1>
   <input type="hidden" name="next" value="{{.Next}}">
-  <label>Password <input type="password" name="password" autofocus required></label>
+  <label>Username <input name="username" autocomplete="username" autofocus required></label>
+  <label>Password <input type="password" name="password" autocomplete="current-password" required></label>
   <button>Login</button>
 </form>
 {{end}}

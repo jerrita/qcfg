@@ -34,10 +34,10 @@ func New(st *store.Store, opts Options, web http.Handler) http.Handler {
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/v1/whoami", s.whoami)
 	api.HandleFunc("GET /api/v1/projects", s.listProjects)
-	api.HandleFunc("POST /api/v1/projects", s.createProject)
+	api.HandleFunc("POST /api/v1/projects", s.admin(s.createProject))
 	api.HandleFunc("GET /api/v1/projects/{p}", s.scoped(s.getProject))
-	api.HandleFunc("PATCH /api/v1/projects/{p}", s.scoped(s.updateProject))
-	api.HandleFunc("DELETE /api/v1/projects/{p}", s.scoped(s.deleteProject))
+	api.HandleFunc("PATCH /api/v1/projects/{p}", s.scoped(s.admin(s.updateProject)))
+	api.HandleFunc("DELETE /api/v1/projects/{p}", s.scoped(s.admin(s.deleteProject)))
 	api.HandleFunc("POST /api/v1/projects/{p}/files", s.scoped(s.createFile))
 	api.HandleFunc("PATCH /api/v1/projects/{p}/files/{f}", s.scoped(s.updateFile))
 	api.HandleFunc("DELETE /api/v1/projects/{p}/files/{f}", s.scoped(s.deleteFile))
@@ -84,6 +84,16 @@ func principal(r *http.Request) *store.Principal {
 }
 
 func device(r *http.Request) string { return principal(r).Name }
+
+func (s *Server) admin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !principal(r).User.Admin {
+			writeErr(w, http.StatusForbidden, "access denied")
+			return
+		}
+		next(w, r)
+	}
+}
 
 // scoped rejects requests for projects the device may not access.
 func (s *Server) scoped(next http.HandlerFunc) http.HandlerFunc {

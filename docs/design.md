@@ -4,7 +4,7 @@
 
 qcfg 是自托管的个人配置同步工具：一个服务端保存配置文件的权威版本与历史，多台设备通过 CLI 拉取、推送。用户以「项目」为单位组织文件，每台设备按需订阅项目。
 
-- 单用户：一个服务实例对应一个所有者，每台设备持有独立 token
+- 多用户：项目共享，由管理员创建用户并分配项目权限，每台设备持有独立 token
 - 服务端可读文件内容：WebUI 可直接查看、编辑、对比；落盘使用服务端密钥加密
 - 冲突检测：基于基线版本的三方比较，冲突时停止并提示用户
 - 跨平台：统一路径写法，可按 OS 覆盖或限定平台
@@ -41,6 +41,10 @@ qcfg <其它命令>      # 客户端
 ### 3.1 服务端
 
 ```
+user      (id, name UNIQUE, password_hash, admin, all_projects, created_at)
+
+user_project (user_id, project_id)                   -- 用户可访问的项目
+
 project   (id, name UNIQUE, description, created_at, updated_at)
 
 file      (id, project_id, name, path, paths_json, platforms_json,
@@ -54,15 +58,15 @@ version   (id, file_id, rev, sha256, size, blob_id,
 blob      (id, sha256 UNIQUE, nonce, ciphertext)     -- 内容寻址，去重
 
 device    (id, name UNIQUE, token_hash, created_at, last_seen_at, last_ip, revoked,
-           all_projects, kind)                       -- kind: device | pat
+           all_projects, kind, user_id)              -- kind: device | pat
 
 device_project (device_id, project_id)               -- 设备/token 可访问的项目
 
 device_request (id, code_hash UNIQUE, user_code UNIQUE, name, ip, status,
-                all_projects, projects_json, created_at, expires_at)
+                all_projects, projects_json, user_id, created_at, expires_at)
                                                      -- 待审批的登录请求
 
-setting   (key, value)                               -- admin 密码哈希等
+setting   (key, value)                               -- 服务设置
 ```
 
 - `rev`：每个文件独立递增的整数，从 1 开始
@@ -70,6 +74,8 @@ setting   (key, value)                               -- admin 密码哈希等
 - 文件权限只记录在文件定义的 `mode` 中
 - `version.device` 记录设备或 token 名，WebUI 修改记为 `web`
 - 访问范围：`all_projects=1` 表示全部项目（含之后新建的），否则仅限 `device_project` 中的项目；设备与 PAT 共用同一命名空间与授权模型，`kind` 区分两者
+- 用户权限：管理员可访问全部项目并管理用户；普通用户仅能管理获授权项目中的文件。设备和 PAT 归属于创建或批准它的用户，有效权限为自身授权与所属用户当前权限的交集；普通用户只管理自己的设备和 PAT，管理员可管理全部设备和 PAT
+- 首位注册用户为管理员，注册成功后关闭公开注册；旧版本的管理员密码迁移至用户名 `admin`，已有设备、PAT 和审批请求归属于该账号
 - 删除文件为软删除，历史保留；同名重新添加时恢复并沿用历史
 
 ### 3.2 文件定义
@@ -169,7 +175,7 @@ qcfg serve [--listen :8080] [--data ./data]
 qcfg serve passwd                # 设置 WebUI 管理员密码
 ```
 
-- `add` 对不存在的项目自动创建
+- 管理员设备执行 `add` 时自动创建不存在的项目；普通用户需先由管理员创建并授权项目
 - `--force`：跳过冲突检查，强制覆盖
 - 全局参数：`--dry-run`、`--json`（机器可读输出）
 
@@ -177,7 +183,7 @@ qcfg serve passwd                # 设置 WebUI 管理员密码
 
 1. 客户端调用 `POST /device/code` 提交设备名（默认 hostname），获得私密的 device code 与 8 位用户码（`XXXX-XXXX`）
 2. 终端提示打开 `<server>/activate` 并输入用户码
-3. 管理员在该页面输入用户码，确认设备名（可修改）与可访问项目后批准或拒绝
+3. 用户登录后在该页面输入用户码，确认设备名（可修改）与可访问项目后批准或拒绝；设备归属于批准者，授权范围受其项目权限限制
 4. 客户端按 `interval` 轮询 `POST /device/token`，批准后获得 token 写入配置；请求 10 分钟后过期
 
 `auth login --token` 跳过上述流程：调用 `GET /whoami` 验证 WebUI 中创建的 PAT（或设备 token），通过后直接写入配置。
@@ -186,7 +192,7 @@ qcfg serve passwd                # 设置 WebUI 管理员密码
 
 所有接口前缀 `/api/v1`，除 `/device/*` 外鉴权头 `Authorization: Bearer`，接受设备 token 与 PAT，JSON 编码；文件内容以 base64 放在 JSON 中，或通过 `/raw` 以二进制传输。
 
-设备只能访问被授权的项目，其余项目在列表中不出现、单独访问返回 `404`；设备/token 新建的项目自动加入其可访问范围。PAT 无管理 REST 接口，创建与授权仅通过 WebUI。
+设备只能访问自身与所属用户均获授权的项目，其余项目在列表中不出现、单独访问返回 `404`。项目的新建、修改与删除仅限管理员账号的设备或 PAT，普通用户调用这些接口返回 `403`；管理员设备/token 新建的项目自动加入其可访问范围。PAT 无管理 REST 接口，创建与授权仅通过 WebUI。
 
 ```
 POST   /device/code                           {name} → {device_code, user_code, expires_in, interval}
@@ -230,8 +236,8 @@ data/
 
 - token：`qcfg_` + 32 字节随机数（base62），服务端只存 SHA-256；可在 WebUI 吊销
 - PAT：`qcfg_pat_` + 32 字节随机数，同样只存 SHA-256，不过期，WebUI 中创建（明文仅显示一次）、按项目授权、吊销或删除
-- device code：32 字节随机数，服务端只存 SHA-256；用户码取自 20 个辅音字母，需管理员登录后输入；每个 IP 同时待审批的请求数上限 3
-- WebUI：管理员密码（argon2id），可由环境变量 `QCFG_ADMIN_PASSWORD` 指定，否则首次启动随机生成并打印到日志；HttpOnly + SameSite=Strict 会话 cookie（会话保存在内存，重启后需重新登录），表单 CSRF token，同一 IP 15 分钟内失败 5 次即限速
+- device code：32 字节随机数，服务端只存 SHA-256；用户码取自 20 个辅音字母，需用户登录后输入；每个 IP 同时待审批的请求数上限 3
+- WebUI：用户名与密码登录，密码使用 argon2id 哈希；首位用户通过注册创建管理员，后续用户由管理员创建。已有管理员账号的密码可由环境变量 `QCFG_ADMIN_PASSWORD` 在启动时覆盖，或用 `qcfg serve passwd` 修改。HttpOnly + SameSite=Strict 会话 cookie（会话保存在内存，重启后需重新登录），表单 CSRF token，同一 IP 15 分钟内失败 5 次即限速；每次请求读取当前用户权限
 - 传输：内置 `--tls-cert/--tls-key`，或置于反向代理之后
 - 限制：单文件大小上限（默认 4 MiB），每文件保留版本数上限（默认 50，0 为不限）
 
@@ -239,8 +245,9 @@ data/
 
 | 页面 | 功能 |
 |---|---|
-| 登录 | 管理员密码 |
-| 项目列表 | 项目名、文件数、最近更新时间；新建/删除 |
+| 注册 / 登录 | 首位用户注册管理员，此后以用户名与密码登录 |
+| 用户 | 管理员创建用户、查看用户列表、分配和调整项目权限 |
+| 项目列表 | 获授权项目的项目名、文件数、最近更新时间；管理员新建/删除 |
 | 项目详情 | 文件表格：名称、路径（含 OS 覆盖）、head rev、更新设备与时间；新增/编辑路径定义 |
 | 文件 | 文本文件在线查看与编辑（保存即新版本）；二进制文件上传/下载 |
 | 历史 | 版本列表、任意两版本 diff、恢复 |

@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,9 +28,6 @@ import (
 	"github.com/jerrita/qcfg/internal/store"
 	"github.com/jerrita/qcfg/internal/syncer"
 )
-
-// PasswordKey is the setting key of the admin password hash.
-const PasswordKey = "admin_password"
 
 const (
 	cookieName  = "qcfg_session"
@@ -51,6 +49,7 @@ type Options struct {
 }
 
 type session struct {
+	user    model.User
 	csrf    string
 	expires time.Time
 }
@@ -106,7 +105,7 @@ func New(st *store.Store, opts Options) http.Handler {
 		failures: map[string][]time.Time{},
 		verify:   make(chan struct{}, maxVerifies),
 	}
-	for _, p := range []string{"login", "projects", "project", "file", "history", "devices", "device", "tokens", "token", "activate"} {
+	for _, p := range []string{"login", "register", "users", "user", "projects", "project", "file", "history", "devices", "device", "tokens", "token", "activate"} {
 		w.pages[p] = template.Must(template.New("layout.html").Funcs(funcs).
 			ParseFS(templateFS, "templates/layout.html", "templates/scope.html", "templates/"+p+".html"))
 	}
@@ -116,32 +115,38 @@ func New(st *store.Store, opts Options) http.Handler {
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
 	mux.HandleFunc("GET /login", w.loginPage)
 	mux.HandleFunc("POST /login", w.login)
+	mux.HandleFunc("GET /register", w.registerPage)
+	mux.HandleFunc("POST /register", w.register)
 
 	auth := http.NewServeMux()
 	auth.HandleFunc("POST /logout", w.logout)
+	auth.HandleFunc("GET /users", w.admin(w.usersPage))
+	auth.HandleFunc("POST /users", w.admin(w.createUser))
+	auth.HandleFunc("GET /users/{u}", w.admin(w.userPage))
+	auth.HandleFunc("POST /users/{u}/access", w.admin(w.setUserAccess))
 	auth.HandleFunc("GET /{$}", w.projectsPage)
-	auth.HandleFunc("POST /projects", w.createProject)
-	auth.HandleFunc("GET /p/{p}", w.projectPage)
-	auth.HandleFunc("POST /p/{p}/delete", w.deleteProject)
-	auth.HandleFunc("POST /p/{p}/files", w.createFile)
-	auth.HandleFunc("GET /p/{p}/f/{f}", w.filePage)
-	auth.HandleFunc("POST /p/{p}/f/{f}/def", w.updateFile)
-	auth.HandleFunc("POST /p/{p}/f/{f}/delete", w.deleteFile)
-	auth.HandleFunc("POST /p/{p}/f/{f}/content", w.saveContent)
-	auth.HandleFunc("GET /p/{p}/f/{f}/raw", w.download)
-	auth.HandleFunc("GET /p/{p}/f/{f}/history", w.historyPage)
-	auth.HandleFunc("POST /p/{p}/f/{f}/restore", w.restore)
+	auth.HandleFunc("POST /projects", w.admin(w.createProject))
+	auth.HandleFunc("GET /p/{p}", w.scoped(w.projectPage))
+	auth.HandleFunc("POST /p/{p}/delete", w.admin(w.deleteProject))
+	auth.HandleFunc("POST /p/{p}/files", w.scoped(w.createFile))
+	auth.HandleFunc("GET /p/{p}/f/{f}", w.scoped(w.filePage))
+	auth.HandleFunc("POST /p/{p}/f/{f}/def", w.scoped(w.updateFile))
+	auth.HandleFunc("POST /p/{p}/f/{f}/delete", w.scoped(w.deleteFile))
+	auth.HandleFunc("POST /p/{p}/f/{f}/content", w.scoped(w.saveContent))
+	auth.HandleFunc("GET /p/{p}/f/{f}/raw", w.scoped(w.download))
+	auth.HandleFunc("GET /p/{p}/f/{f}/history", w.scoped(w.historyPage))
+	auth.HandleFunc("POST /p/{p}/f/{f}/restore", w.scoped(w.restore))
 	auth.HandleFunc("GET /devices", w.devicesPage)
-	auth.HandleFunc("GET /devices/{d}", w.devicePage)
-	auth.HandleFunc("POST /devices/{d}/access", w.setDeviceAccess)
-	auth.HandleFunc("POST /devices/{d}/revoke", w.revokeDevice)
-	auth.HandleFunc("POST /devices/{d}/delete", w.deleteDevice)
+	auth.HandleFunc("GET /devices/{d}", w.owned(w.devicePage, false))
+	auth.HandleFunc("POST /devices/{d}/access", w.owned(w.setDeviceAccess, false))
+	auth.HandleFunc("POST /devices/{d}/revoke", w.owned(w.revokeDevice, false))
+	auth.HandleFunc("POST /devices/{d}/delete", w.owned(w.deleteDevice, false))
 	auth.HandleFunc("GET /tokens", w.tokensPage)
 	auth.HandleFunc("POST /tokens", w.createToken)
-	auth.HandleFunc("GET /tokens/{t}", w.tokenPage)
-	auth.HandleFunc("POST /tokens/{t}/access", w.setTokenAccess)
-	auth.HandleFunc("POST /tokens/{t}/revoke", w.revokeToken)
-	auth.HandleFunc("POST /tokens/{t}/delete", w.deleteToken)
+	auth.HandleFunc("GET /tokens/{t}", w.owned(w.tokenPage, true))
+	auth.HandleFunc("POST /tokens/{t}/access", w.owned(w.setTokenAccess, true))
+	auth.HandleFunc("POST /tokens/{t}/revoke", w.owned(w.revokeToken, true))
+	auth.HandleFunc("POST /tokens/{t}/delete", w.owned(w.deleteToken, true))
 	auth.HandleFunc("GET /activate", w.activatePage)
 	auth.HandleFunc("POST /activate", w.activate)
 	mux.Handle("/", w.requireSession(auth))
@@ -156,12 +161,18 @@ func (w *Web) currentSession(r *http.Request) (session, bool) {
 		return session{}, false
 	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	s, ok := w.sessions[c.Value]
 	if !ok || time.Now().After(s.expires) {
 		delete(w.sessions, c.Value)
+		w.mu.Unlock()
 		return session{}, false
 	}
+	w.mu.Unlock()
+	u, err := w.store.GetUser(s.user.ID)
+	if err != nil {
+		return session{}, false
+	}
+	s.user = u
 	return s, true
 }
 
@@ -220,6 +231,14 @@ func nextURL(r *http.Request) string {
 }
 
 func (w *Web) loginPage(rw http.ResponseWriter, r *http.Request) {
+	open, err := w.store.RegistrationOpen()
+	if notFound(rw, err) {
+		return
+	}
+	if open {
+		http.Redirect(rw, r, "/register", http.StatusSeeOther)
+		return
+	}
 	if _, ok := w.currentSession(r); ok {
 		http.Redirect(rw, r, nextURL(r), http.StatusSeeOther)
 		return
@@ -239,23 +258,26 @@ func (w *Web) login(rw http.ResponseWriter, r *http.Request) {
 	case <-r.Context().Done():
 		return
 	}
-	hash, err := w.store.Setting(PasswordKey)
-	ok := err == nil && crypto.VerifyPassword(hash, r.FormValue("password"))
+	u, err := w.store.AuthenticateUser(strings.TrimSpace(r.FormValue("username")), r.FormValue("password"))
 	<-w.verify
-	if !ok {
+	if err != nil {
 		w.fail(ip)
-		w.render(rw, r, "login", "Login", map[string]any{"Err": "Wrong password", "Next": nextURL(r)})
+		w.render(rw, r, "login", "Login", map[string]any{"Err": "Wrong username or password", "Next": nextURL(r)})
 		return
 	}
+	w.startSession(rw, r, u)
+}
+
+func (w *Web) startSession(rw http.ResponseWriter, r *http.Request, u model.User) {
 	id := crypto.RandomString(32)
 	w.mu.Lock()
-	delete(w.failures, ip)
+	delete(w.failures, limitKey(server.ClientIP(r)))
 	for k, s := range w.sessions {
 		if time.Now().After(s.expires) {
 			delete(w.sessions, k)
 		}
 	}
-	w.sessions[id] = session{csrf: crypto.RandomString(24), expires: time.Now().Add(sessionTTL)}
+	w.sessions[id] = session{user: u, csrf: crypto.RandomString(24), expires: time.Now().Add(sessionTTL)}
 	w.mu.Unlock()
 	http.SetCookie(rw, &http.Cookie{
 		Name: cookieName, Value: id, Path: "/", HttpOnly: true, Secure: w.opts.SecureOnly,
@@ -316,6 +338,8 @@ func (w *Web) render(rw http.ResponseWriter, r *http.Request, page, title string
 	if s, ok := sessionFrom(r); ok {
 		data["CSRF"] = s.csrf
 		data["LoggedIn"] = true
+		data["User"] = s.user
+		data["Admin"] = s.user.Admin
 	}
 	if _, ok := data["Msg"]; !ok {
 		data["Msg"] = r.URL.Query().Get("msg")
@@ -350,6 +374,8 @@ func errText(err error) string {
 		return "Not found"
 	case errors.Is(err, store.ErrExists):
 		return "Already exists"
+	case errors.Is(err, store.ErrDenied):
+		return "Access denied"
 	}
 	log.Printf("error: %v", err)
 	return "Internal error"
@@ -380,6 +406,8 @@ func (w *Web) projectsPage(rw http.ResponseWriter, r *http.Request) {
 	if notFound(rw, err) {
 		return
 	}
+	s, _ := sessionFrom(r)
+	ps = slices.DeleteFunc(ps, func(p model.Project) bool { return !s.user.CanAccess(p.Name) })
 	w.render(rw, r, "projects", "Projects", map[string]any{"Projects": ps})
 }
 
@@ -593,20 +621,36 @@ func (w *Web) devicesPage(rw http.ResponseWriter, r *http.Request) {
 	if notFound(rw, err) {
 		return
 	}
+	s, _ := sessionFrom(r)
+	ds = slices.DeleteFunc(ds, func(d model.Device) bool { return !s.user.Admin && d.UserID != s.user.ID })
 	w.render(rw, r, "devices", "Devices", map[string]any{"Devices": ds})
 }
 
 // scopeData returns template data for the project access form.
-func (w *Web) scopeData(all bool, selected []string) (map[string]any, error) {
+func (w *Web) scopeData(r *http.Request, all bool, selected []string) (map[string]any, error) {
+	s, _ := sessionFrom(r)
+	return w.scopeDataFor(s.user, all, selected)
+}
+
+func (w *Web) scopeDataFor(u model.User, all bool, selected []string) (map[string]any, error) {
 	ps, err := w.store.ListProjects()
 	if err != nil {
 		return nil, err
 	}
+	ps = slices.DeleteFunc(ps, func(p model.Project) bool { return !u.CanAccess(p.Name) })
 	sel := map[string]bool{}
 	for _, p := range selected {
 		sel[p] = true
 	}
-	return map[string]any{"All": all, "Projects": ps, "Selected": sel}, nil
+	return map[string]any{"All": all, "CanGrantAll": u.Admin || u.AllProjects, "Projects": ps, "Selected": sel}, nil
+}
+
+func (w *Web) credentialScope(d model.Device) (map[string]any, error) {
+	u, err := w.store.GetUser(d.UserID)
+	if err != nil {
+		return nil, err
+	}
+	return w.scopeDataFor(u, d.AllProjects, d.Projects)
 }
 
 func (w *Web) devicePage(rw http.ResponseWriter, r *http.Request) {
@@ -614,7 +658,7 @@ func (w *Web) devicePage(rw http.ResponseWriter, r *http.Request) {
 	if notFound(rw, err) {
 		return
 	}
-	data, err := w.scopeData(d.AllProjects, d.Projects)
+	data, err := w.credentialScope(d)
 	if notFound(rw, err) {
 		return
 	}
@@ -662,7 +706,9 @@ func (w *Web) renderTokens(rw http.ResponseWriter, r *http.Request, newToken *st
 	if err != nil {
 		return err
 	}
-	scope, err := w.scopeData(false, nil)
+	s, _ := sessionFrom(r)
+	ts = slices.DeleteFunc(ts, func(d model.Device) bool { return !s.user.Admin && d.UserID != s.user.ID })
+	scope, err := w.scopeData(r, false, nil)
 	if err != nil {
 		return err
 	}
@@ -687,7 +733,8 @@ func (w *Web) createToken(rw http.ResponseWriter, r *http.Request) {
 		_ = w.renderTokens(rw, r, nil, "Invalid token name")
 		return
 	}
-	token, err := w.store.CreatePAT(name, r.FormValue("all") != "", r.Form["project"])
+	s, _ := sessionFrom(r)
+	token, err := w.store.CreatePAT(s.user.ID, name, r.FormValue("all") != "", r.Form["project"])
 	if err != nil {
 		_ = w.renderTokens(rw, r, nil, errText(err))
 		return
@@ -700,7 +747,7 @@ func (w *Web) tokenPage(rw http.ResponseWriter, r *http.Request) {
 	if notFound(rw, err) {
 		return
 	}
-	data, err := w.scopeData(t.AllProjects, t.Projects)
+	data, err := w.credentialScope(t)
 	if notFound(rw, err) {
 		return
 	}
@@ -754,7 +801,7 @@ func (w *Web) renderActivate(rw http.ResponseWriter, r *http.Request, code, errM
 	if notFound(rw, err) {
 		return
 	}
-	data, err := w.scopeData(false, nil)
+	data, err := w.scopeData(r, false, nil)
 	if notFound(rw, err) {
 		return
 	}
@@ -777,7 +824,8 @@ func (w *Web) activate(rw http.ResponseWriter, r *http.Request) {
 		w.renderActivate(rw, r, code, "Invalid device name")
 		return
 	}
-	if err := w.store.ApproveDeviceRequest(code, name, r.FormValue("all") != "", r.Form["project"]); err != nil {
+	s, _ := sessionFrom(r)
+	if err := w.store.ApproveDeviceRequest(s.user.ID, code, name, r.FormValue("all") != "", r.Form["project"]); err != nil {
 		msg := errText(err)
 		if errors.Is(err, store.ErrExists) {
 			msg = "Name already in use"

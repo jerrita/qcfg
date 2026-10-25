@@ -38,6 +38,19 @@ type Store struct {
 }
 
 const schema = `
+CREATE TABLE IF NOT EXISTS user (
+	id INTEGER PRIMARY KEY,
+	name TEXT NOT NULL UNIQUE,
+	password_hash TEXT NOT NULL,
+	admin INTEGER NOT NULL DEFAULT 0,
+	all_projects INTEGER NOT NULL DEFAULT 0,
+	created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS user_project (
+	user_id INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+	project_id INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+	PRIMARY KEY(user_id, project_id)
+);
 CREATE TABLE IF NOT EXISTS project (
 	id          INTEGER PRIMARY KEY,
 	name        TEXT NOT NULL UNIQUE,
@@ -136,11 +149,22 @@ func migrate(db *sql.DB) error {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('device') WHERE name='kind'`).Scan(&n); err != nil {
 		return err
 	}
-	if n > 0 {
-		return nil
+	if n == 0 {
+		if _, err := db.Exec(`ALTER TABLE device ADD COLUMN kind TEXT NOT NULL DEFAULT 'device'`); err != nil {
+			return err
+		}
 	}
-	_, err := db.Exec(`ALTER TABLE device ADD COLUMN kind TEXT NOT NULL DEFAULT 'device'`)
-	return err
+	for _, table := range []string{"device", "device_request"} {
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name='user_id'`, table).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			if _, err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN user_id INTEGER REFERENCES user(id)`); err != nil {
+				return err
+			}
+		}
+	}
+	return migrateAdmin(db)
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -586,7 +610,7 @@ func (s *Store) deviceProjects(id int64) ([]string, error) {
 }
 
 func (s *Store) devices(where string, args ...any) ([]model.Device, error) {
-	rows, err := s.db.Query(`SELECT id, name, created_at, last_seen_at, last_ip, revoked, all_projects FROM device `+
+	rows, err := s.db.Query(`SELECT id, name, created_at, last_seen_at, last_ip, revoked, all_projects, COALESCE(user_id, 0) FROM device `+
 		where+` ORDER BY name`, args...)
 	if err != nil {
 		return nil, err
@@ -596,7 +620,7 @@ func (s *Store) devices(where string, args ...any) ([]model.Device, error) {
 	for rows.Next() {
 		var d model.Device
 		var id, c, l int64
-		if err := rows.Scan(&id, &d.Name, &c, &l, &d.LastIP, &d.Revoked, &d.AllProjects); err != nil {
+		if err := rows.Scan(&id, &d.Name, &c, &l, &d.LastIP, &d.Revoked, &d.AllProjects, &d.UserID); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -646,6 +670,7 @@ func (s *Store) GetPAT(name string) (model.Device, error) { return s.getByKind(k
 // Principal is an authenticated device and the projects it may access.
 type Principal struct {
 	ID          int64
+	User        model.User
 	Name        string
 	AllProjects bool
 	Projects    []string
@@ -658,11 +683,16 @@ func (p *Principal) CanAccess(project string) bool {
 // Authenticate resolves a token to a device and records the access.
 func (s *Store) Authenticate(token, ip string) (*Principal, error) {
 	p := &Principal{}
-	err := s.db.QueryRow(`SELECT id, name, all_projects FROM device WHERE token_hash=? AND revoked=0`, crypto.HashToken(token)).
-		Scan(&p.ID, &p.Name, &p.AllProjects)
+	var userID int64
+	err := s.db.QueryRow(`SELECT id, name, all_projects, COALESCE(user_id, 0) FROM device WHERE token_hash=? AND revoked=0`, crypto.HashToken(token)).
+		Scan(&p.ID, &p.Name, &p.AllProjects, &userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
+	if err != nil {
+		return nil, err
+	}
+	p.User, err = s.GetUser(userID)
 	if err != nil {
 		return nil, err
 	}
@@ -674,6 +704,14 @@ func (s *Store) Authenticate(token, ip string) (*Principal, error) {
 			return nil, err
 		}
 	}
+	if !p.User.Admin && !p.User.AllProjects {
+		if p.AllProjects {
+			p.Projects = p.User.Projects
+		} else {
+			p.Projects = slices.DeleteFunc(p.Projects, func(name string) bool { return !p.User.CanAccess(name) })
+		}
+		p.AllProjects = false
+	}
 	return p, nil
 }
 
@@ -684,15 +722,18 @@ func (s *Store) GrantProject(deviceID int64, project string) error {
 
 // CreatePAT creates a personal access token and returns its secret, which is
 // never stored or shown again.
-func (s *Store) CreatePAT(name string, all bool, projects []string) (string, error) {
+func (s *Store) CreatePAT(userID int64, name string, all bool, projects []string) (string, error) {
+	if err := s.validateAccess(userID, all, projects); err != nil {
+		return "", err
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback()
 	token := crypto.NewPAT()
-	res, err := tx.Exec(`INSERT INTO device(name, token_hash, created_at, all_projects, kind)
-		VALUES(?,?,?,?,?)`, name, crypto.HashToken(token), now(), all, kindPAT)
+	res, err := tx.Exec(`INSERT INTO device(name, token_hash, created_at, all_projects, kind, user_id)
+		VALUES(?,?,?,?,?,?)`, name, crypto.HashToken(token), now(), all, kindPAT, userID)
 	if isUnique(err) {
 		return "", ErrExists
 	}
@@ -712,6 +753,13 @@ func (s *Store) CreatePAT(name string, all bool, projects []string) (string, err
 }
 
 func (s *Store) setAccess(kind, name string, all bool, projects []string) error {
+	d, err := s.getByKind(kind, name)
+	if err != nil {
+		return err
+	}
+	if err := s.validateAccess(d.UserID, all, projects); err != nil {
+		return err
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -822,7 +870,10 @@ func (s *Store) PendingDeviceRequest(userCode string) (DeviceRequest, error) {
 
 // ApproveDeviceRequest approves a pending request; the device is created
 // with name and access when it next polls with its device code.
-func (s *Store) ApproveDeviceRequest(userCode, name string, all bool, projects []string) error {
+func (s *Store) ApproveDeviceRequest(userID int64, userCode, name string, all bool, projects []string) error {
+	if err := s.validateAccess(userID, all, projects); err != nil {
+		return err
+	}
 	var n int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM device WHERE name=?`, name).Scan(&n); err != nil {
 		return err
@@ -834,8 +885,8 @@ func (s *Store) ApproveDeviceRequest(userCode, name string, all bool, projects [
 		projects = []string{}
 	}
 	pj, _ := json.Marshal(projects)
-	return affected(s.db.Exec(`UPDATE device_request SET status='approved', name=?, all_projects=?, projects_json=?
-		WHERE user_code=? AND status='pending' AND expires_at>?`, name, all, string(pj), userCode, now()))
+	return affected(s.db.Exec(`UPDATE device_request SET status='approved', name=?, all_projects=?, projects_json=?, user_id=?
+		WHERE user_code=? AND status='pending' AND expires_at>?`, name, all, string(pj), userID, userCode, now()))
 }
 
 func (s *Store) DenyDeviceRequest(userCode string) error {
@@ -852,12 +903,12 @@ func (s *Store) ClaimDeviceToken(deviceCode string) (token, name string, err err
 		return "", "", err
 	}
 	defer tx.Rollback()
-	var reqID int64
+	var reqID, userID int64
 	var status, pj string
 	var all bool
-	err = tx.QueryRow(`SELECT id, status, name, all_projects, projects_json FROM device_request
+	err = tx.QueryRow(`SELECT id, status, name, all_projects, projects_json, COALESCE(user_id, 0) FROM device_request
 		WHERE code_hash=? AND expires_at>?`, crypto.HashToken(deviceCode), now()).
-		Scan(&reqID, &status, &name, &all, &pj)
+		Scan(&reqID, &status, &name, &all, &pj, &userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", ErrNotFound
 	}
@@ -877,8 +928,8 @@ func (s *Store) ClaimDeviceToken(deviceCode string) (token, name string, err err
 		return "", "", ErrDenied
 	}
 	token = crypto.NewToken()
-	res, err := tx.Exec(`INSERT INTO device(name, token_hash, created_at, all_projects, kind) VALUES(?,?,?,?,?)`,
-		name, crypto.HashToken(token), now(), all, kindDevice)
+	res, err := tx.Exec(`INSERT INTO device(name, token_hash, created_at, all_projects, kind, user_id) VALUES(?,?,?,?,?,?)`,
+		name, crypto.HashToken(token), now(), all, kindDevice, userID)
 	if isUnique(err) {
 		return "", "", ErrExists
 	}

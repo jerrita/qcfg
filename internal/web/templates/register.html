@@ -1,0 +1,9 @@
+{{define "content"}}
+<form method="post" action="/register" class="card narrow">
+  <h1>Create administrator</h1>
+  <p>The first account is the administrator. Registration closes after this account is created.</p>
+  <label>Username <input name="username" autocomplete="username" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,127}" autofocus required></label>
+  <label>Password <input type="password" name="password" autocomplete="new-password" minlength="8" maxlength="1024" required></label>
+  <button>Create administrator</button>
+</form>
+{{end}}

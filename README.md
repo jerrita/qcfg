@@ -3,6 +3,7 @@
 自托管的个人配置同步工具。服务端保存配置文件的权威版本与历史，多台设备通过 CLI 拉取、推送；以「项目」为单位组织文件，每台设备按需订阅。
 
 - 单个二进制，同时包含服务端（REST API + WebUI）与客户端
+- 多用户登录，管理员创建用户并分配共享项目的访问权限
 - 基于基线版本的三方比较，冲突时停止并提示，不会静默覆盖
 - 跨平台路径：`~`、`$XDG_CONFIG_HOME`、`%APPDATA%` 等变量，可按 OS 覆盖路径或限定平台
 - WebUI 在线查看、编辑、对比历史版本、恢复；管理设备与授权
@@ -16,7 +17,6 @@ Docker：
 
 ```sh
 docker run -d --name qcfg -p 8080:8080 -v qcfg-data:/data ghcr.io/jerrita/qcfg:latest
-docker logs qcfg   # 首次启动打印随机生成的 WebUI 管理员密码
 ```
 
 Docker Compose，`compose.yaml`：
@@ -28,8 +28,6 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
-    environment:
-      QCFG_ADMIN_PASSWORD: ${QCFG_ADMIN_PASSWORD}   # WebUI 管理员密码，至少 8 位
     volumes:
       - qcfg-data:/data
 
@@ -38,7 +36,6 @@ volumes:
 ```
 
 ```sh
-echo 'QCFG_ADMIN_PASSWORD=change-me-please' > .env
 docker compose up -d
 ```
 
@@ -56,7 +53,9 @@ qcfg serve --listen :8080 --data ./data
 | `--max-file-size` | `4194304` | 单文件大小上限（字节） |
 | `--keep-versions` | `50` | 每个文件保留的版本数，`0` 为不限 |
 
-- 管理员密码：设置环境变量 `QCFG_ADMIN_PASSWORD` 后每次启动以其为准；未设置时首次启动随机生成，可用 `qcfg serve passwd --data ./data` 修改（Docker 中为 `docker exec -it qcfg /qcfg serve passwd --data /data`）
+- 首次访问 WebUI 时注册管理员账号，注册完成后关闭公开注册。管理员在 Users 页创建用户、分配或调整项目权限；普通用户管理获授权项目中的文件，项目的新建、修改与删除由管理员执行
+- 旧版本升级时自动迁移为用户名 `admin`，沿用原管理员密码，保留项目、设备和 Token，并关闭注册
+- 管理员账号创建后，设置环境变量 `QCFG_ADMIN_PASSWORD` 会在后续启动时覆盖其密码；也可用 `qcfg serve passwd --data ./data` 修改（Docker 中为 `docker exec -it qcfg /qcfg serve passwd --data /data`），密码至少 8 位
 - 加密密钥可由环境变量 `QCFG_MASTER_KEY`（64 位十六进制）提供；备份时需同时备份数据库与密钥
 
 ## 安装客户端
@@ -84,6 +83,7 @@ go install github.com/jerrita/qcfg/cmd/qcfg@latest
 ## 使用
 
 登录：终端显示用户码，在 WebUI 的 `/activate` 页面输入并批准，可修改设备名与可访问项目。
+设备和 PAT 归属于操作用户，访问范围受该用户的项目权限限制；用户权限收回后，已有会话、设备和 PAT 同步生效。
 
 ```sh
 qcfg auth login --server https://cfg.example.com
@@ -95,7 +95,7 @@ qcfg auth login --server https://cfg.example.com
 qcfg auth login --server https://cfg.example.com --token qcfg_pat_xxx
 ```
 
-在一台设备上添加文件（项目不存在时自动创建）：
+在一台设备上添加文件（普通用户需先由管理员创建并授权项目；管理员的设备在项目不存在时自动创建）：
 
 ```sh
 qcfg add dotfiles ~/.gitconfig

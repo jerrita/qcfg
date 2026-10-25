@@ -1,0 +1,20 @@
+{{define "content"}}
+<h1>Users</h1>
+<table>
+  <thead><tr><th>Name</th><th>Role</th><th>Projects</th><th>Created</th><th></th></tr></thead>
+  <tbody>{{range .Users}}
+    <tr><td>{{.Name}}</td><td>{{if .Admin}}Administrator{{else}}User{{end}}</td>
+    <td>{{if or .Admin .AllProjects}}all{{else if .Projects}}{{join .Projects}}{{else}}<span class="muted">none</span>{{end}}</td>
+    <td>{{time .CreatedAt}}</td><td><a href="/users/{{.ID}}">Manage</a></td></tr>
+  {{end}}</tbody>
+</table>
+<form method="post" action="/users" class="card">
+  <h2>New user</h2>
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Username <input name="username" autocomplete="off" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,127}" required></label>
+  <label>Password <input type="password" name="password" autocomplete="new-password" minlength="8" maxlength="1024" required></label>
+  <h2>Project access</h2>
+  {{template "scope" .}}
+  <button>Create user</button>
+</form>
+{{end}}

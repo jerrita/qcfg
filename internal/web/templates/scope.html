@@ -1,5 +1,5 @@
 {{define "scope"}}
-<label class="check"><input type="checkbox" name="all" value="1"{{if .All}} checked{{end}}> All projects, including ones created later</label>
+{{if .CanGrantAll}}<label class="check"><input type="checkbox" name="all" value="1"{{if .All}} checked{{end}}> All projects, including ones created later</label>{{end}}
 <div class="checks">
   {{range .Projects}}
   <label class="check"><input type="checkbox" name="project" value="{{.Name}}"{{if index $.Selected .Name}} checked{{end}}> {{.Name}}</label>

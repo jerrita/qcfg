@@ -1,0 +1,13 @@
+{{define "content"}}
+<h1><a href="/users">Users</a> / {{.Account.Name}}</h1>
+{{if .Account.Admin}}
+<p>Administrators can manage users and access all projects.</p>
+{{else}}
+<form method="post" action="/users/{{.Account.ID}}/access" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <h2>Project access</h2>
+  {{template "scope" .}}
+  <button>Save access</button>
+</form>
+{{end}}
+{{end}}

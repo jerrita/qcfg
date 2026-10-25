@@ -8,7 +8,7 @@
   <tr><td colspan="4" class="muted">No projects yet</td></tr>
   {{end}}
 </table>
-<form method="post" action="/projects" class="card">
+{{if .Admin}}<form method="post" action="/projects" class="card">
   <h2>New project</h2>
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <div class="row">
@@ -16,5 +16,5 @@
     <input name="description" placeholder="description" class="grow">
     <button>Create</button>
   </div>
-</form>
+</form>{{end}}
 {{end}}

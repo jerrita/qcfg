@@ -64,11 +64,15 @@ func TestPAT(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	token, err := s.CreatePAT("ci", false, []string{"p"})
+	u, err := s.RegisterAdmin("owner", crypto.RandomString(18))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreatePAT("ci", false, nil); !errors.Is(err, ErrExists) {
+	token, err := s.CreatePAT(u.ID, "ci", false, []string{"p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreatePAT(u.ID, "ci", false, nil); !errors.Is(err, ErrExists) {
 		t.Fatalf("duplicate name: err=%v", err)
 	}
 
@@ -107,7 +111,7 @@ func TestPAT(t *testing.T) {
 	if err := s.DeletePAT("ci"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreatePAT("ci", false, nil); err != nil {
+	if _, err := s.CreatePAT(u.ID, "ci", false, nil); err != nil {
 		t.Fatalf("recreate after delete: err=%v", err)
 	}
 }

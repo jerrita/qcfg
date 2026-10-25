@@ -42,6 +42,7 @@ type Version struct {
 }
 
 type Device struct {
+	UserID      int64     `json:"-"`
 	Name        string    `json:"name"`
 	CreatedAt   time.Time `json:"created_at"`
 	LastSeenAt  time.Time `json:"last_seen_at"`
@@ -49,6 +50,19 @@ type Device struct {
 	Revoked     bool      `json:"revoked"`
 	AllProjects bool      `json:"all_projects"`
 	Projects    []string  `json:"projects,omitempty"`
+}
+
+type User struct {
+	ID          int64
+	Name        string
+	Admin       bool
+	AllProjects bool
+	Projects    []string
+	CreatedAt   time.Time
+}
+
+func (u User) CanAccess(project string) bool {
+	return u.Admin || u.AllProjects || slices.Contains(u.Projects, project)
 }
 
 type DeviceCodeRequest struct {
