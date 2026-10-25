@@ -87,10 +87,13 @@ func Sha256Hex(b []byte) string {
 	return hex.EncodeToString(s[:])
 }
 
+func newTokenBody() string { return new(big.Int).SetBytes(RandomBytes(32)).Text(62) }
+
 // NewToken returns "qcfg_" followed by 32 random bytes in base62.
-func NewToken() string {
-	return "qcfg_" + new(big.Int).SetBytes(RandomBytes(32)).Text(62)
-}
+func NewToken() string { return "qcfg_" + newTokenBody() }
+
+// NewPAT returns "qcfg_pat_" followed by 32 random bytes in base62.
+func NewPAT() string { return "qcfg_pat_" + newTokenBody() }
 
 func HashToken(token string) string { return Sha256Hex([]byte(token)) }
 

@@ -85,7 +85,8 @@ CREATE TABLE IF NOT EXISTS device (
 	last_seen_at INTEGER NOT NULL DEFAULT 0,
 	last_ip      TEXT NOT NULL DEFAULT '',
 	revoked      INTEGER NOT NULL DEFAULT 0,
-	all_projects INTEGER NOT NULL DEFAULT 0
+	all_projects INTEGER NOT NULL DEFAULT 0,
+	kind         TEXT NOT NULL DEFAULT 'device'
 );
 CREATE TABLE IF NOT EXISTS device_project (
 	device_id  INTEGER NOT NULL REFERENCES device(id) ON DELETE CASCADE,
@@ -121,7 +122,25 @@ func Open(path string, key []byte) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 	return &Store{db: db, key: key}, nil
+}
+
+// migrate adds columns introduced after the initial schema to databases
+// created by older versions; fresh databases get them from the schema.
+func migrate(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('device') WHERE name='kind'`).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	_, err := db.Exec(`ALTER TABLE device ADD COLUMN kind TEXT NOT NULL DEFAULT 'device'`)
+	return err
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -599,10 +618,18 @@ func (s *Store) devices(where string, args ...any) ([]model.Device, error) {
 	return out, nil
 }
 
-func (s *Store) ListDevices() ([]model.Device, error) { return s.devices("") }
+// Kind distinguishes login devices from personal access tokens.
+const (
+	kindDevice = "device"
+	kindPAT    = "pat"
+)
 
-func (s *Store) GetDevice(name string) (model.Device, error) {
-	ds, err := s.devices("WHERE name=?", name)
+func (s *Store) ListDevices() ([]model.Device, error) { return s.devices(`WHERE kind='device'`) }
+
+func (s *Store) ListPATs() ([]model.Device, error) { return s.devices(`WHERE kind='pat'`) }
+
+func (s *Store) getByKind(kind, name string) (model.Device, error) {
+	ds, err := s.devices(`WHERE kind=? AND name=?`, kind, name)
 	if err != nil {
 		return model.Device{}, err
 	}
@@ -611,6 +638,10 @@ func (s *Store) GetDevice(name string) (model.Device, error) {
 	}
 	return ds[0], nil
 }
+
+func (s *Store) GetDevice(name string) (model.Device, error) { return s.getByKind(kindDevice, name) }
+
+func (s *Store) GetPAT(name string) (model.Device, error) { return s.getByKind(kindPAT, name) }
 
 // Principal is an authenticated device and the projects it may access.
 type Principal struct {
@@ -651,15 +682,43 @@ func (s *Store) GrantProject(deviceID int64, project string) error {
 	return grantProjects(s.db, deviceID, []string{project})
 }
 
-// SetDeviceAccess replaces the projects a device may access.
-func (s *Store) SetDeviceAccess(name string, all bool, projects []string) error {
+// CreatePAT creates a personal access token and returns its secret, which is
+// never stored or shown again.
+func (s *Store) CreatePAT(name string, all bool, projects []string) (string, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	token := crypto.NewPAT()
+	res, err := tx.Exec(`INSERT INTO device(name, token_hash, created_at, all_projects, kind)
+		VALUES(?,?,?,?,?)`, name, crypto.HashToken(token), now(), all, kindPAT)
+	if isUnique(err) {
+		return "", ErrExists
+	}
+	if err != nil {
+		return "", err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return "", err
+	}
+	if !all {
+		if err := grantProjects(tx, id, projects); err != nil {
+			return "", err
+		}
+	}
+	return token, tx.Commit()
+}
+
+func (s *Store) setAccess(kind, name string, all bool, projects []string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	var id int64
-	err = tx.QueryRow(`SELECT id FROM device WHERE name=?`, name).Scan(&id)
+	err = tx.QueryRow(`SELECT id FROM device WHERE name=? AND kind=?`, name, kind).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -680,13 +739,31 @@ func (s *Store) SetDeviceAccess(name string, all bool, projects []string) error 
 	return tx.Commit()
 }
 
-func (s *Store) RevokeDevice(name string) error {
-	return affected(s.db.Exec(`UPDATE device SET revoked=1 WHERE name=?`, name))
+// SetDeviceAccess replaces the projects a device may access.
+func (s *Store) SetDeviceAccess(name string, all bool, projects []string) error {
+	return s.setAccess(kindDevice, name, all, projects)
 }
 
-func (s *Store) DeleteDevice(name string) error {
-	return affected(s.db.Exec(`DELETE FROM device WHERE name=?`, name))
+// SetPATAccess replaces the projects a personal access token may access.
+func (s *Store) SetPATAccess(name string, all bool, projects []string) error {
+	return s.setAccess(kindPAT, name, all, projects)
 }
+
+func (s *Store) revokeByKind(kind, name string) error {
+	return affected(s.db.Exec(`UPDATE device SET revoked=1 WHERE name=? AND kind=?`, name, kind))
+}
+
+func (s *Store) RevokeDevice(name string) error { return s.revokeByKind(kindDevice, name) }
+
+func (s *Store) RevokePAT(name string) error { return s.revokeByKind(kindPAT, name) }
+
+func (s *Store) deleteByKind(kind, name string) error {
+	return affected(s.db.Exec(`DELETE FROM device WHERE name=? AND kind=?`, name, kind))
+}
+
+func (s *Store) DeleteDevice(name string) error { return s.deleteByKind(kindDevice, name) }
+
+func (s *Store) DeletePAT(name string) error { return s.deleteByKind(kindPAT, name) }
 
 // ---- device authorization ----
 
@@ -800,8 +877,8 @@ func (s *Store) ClaimDeviceToken(deviceCode string) (token, name string, err err
 		return "", "", ErrDenied
 	}
 	token = crypto.NewToken()
-	res, err := tx.Exec(`INSERT INTO device(name, token_hash, created_at, all_projects) VALUES(?,?,?,?)`,
-		name, crypto.HashToken(token), now(), all)
+	res, err := tx.Exec(`INSERT INTO device(name, token_hash, created_at, all_projects, kind) VALUES(?,?,?,?,?)`,
+		name, crypto.HashToken(token), now(), all, kindDevice)
 	if isUnique(err) {
 		return "", "", ErrExists
 	}

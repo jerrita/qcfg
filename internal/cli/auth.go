@@ -18,10 +18,10 @@ import (
 func authCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "auth", Short: "Manage server credentials"}
 
-	var server, name string
+	var server, name, token string
 	login := &cobra.Command{
 		Use:   "login",
-		Short: "Log in by approving this device in the WebUI",
+		Short: "Log in by approving this device in the WebUI, or with a token",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := state.LoadConfig()
@@ -36,6 +36,22 @@ func authCmd() *cobra.Command {
 			server = strings.TrimRight(strings.TrimSpace(server), "/")
 			if server == "" {
 				return errors.New("server is required")
+			}
+			if token != "" {
+				if name != "" {
+					return errors.New("--name cannot be used with --token")
+				}
+				c := client.New(server, strings.TrimSpace(token))
+				who, err := c.WhoAmI()
+				if err != nil {
+					return fmt.Errorf("token login failed: %w", err)
+				}
+				cfg.Server, cfg.Token, cfg.Device = server, strings.TrimSpace(token), who.Device
+				if err := state.SaveConfig(cfg); err != nil {
+					return err
+				}
+				fmt.Printf("Logged in to %s as %q\n", server, who.Device)
+				return nil
 			}
 			if name == "" {
 				if name, err = os.Hostname(); err != nil {
@@ -72,6 +88,7 @@ func authCmd() *cobra.Command {
 	}
 	login.Flags().StringVar(&server, "server", "", "server URL")
 	login.Flags().StringVar(&name, "name", "", "device name (default: hostname)")
+	login.Flags().StringVar(&token, "token", "", "access token created in the WebUI (skips device approval)")
 
 	logout := &cobra.Command{
 		Use:   "logout",

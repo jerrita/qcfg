@@ -52,3 +52,62 @@ func TestPut(t *testing.T) {
 		t.Fatalf("blobs=%d err=%v", blobs, err)
 	}
 }
+
+func TestPAT(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"), crypto.RandomBytes(32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, p := range []string{"p", "q"} {
+		if err := s.CreateProject(p, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	token, err := s.CreatePAT("ci", false, []string{"p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreatePAT("ci", false, nil); !errors.Is(err, ErrExists) {
+		t.Fatalf("duplicate name: err=%v", err)
+	}
+
+	p, err := s.Authenticate(token, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.CanAccess("p") || p.CanAccess("q") {
+		t.Fatalf("scope: all=%v projects=%v", p.AllProjects, p.Projects)
+	}
+	ds, err := s.ListDevices()
+	if err != nil || len(ds) != 0 {
+		t.Fatalf("devices leaked tokens: %+v err=%v", ds, err)
+	}
+	if _, err := s.GetDevice("ci"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetDevice on token: err=%v", err)
+	}
+	ps, err := s.ListPATs()
+	if err != nil || len(ps) != 1 || ps[0].Name != "ci" {
+		t.Fatalf("ListPATs: %+v err=%v", ps, err)
+	}
+
+	if err := s.SetPATAccess("ci", true, nil); err != nil {
+		t.Fatal(err)
+	}
+	if p, err = s.Authenticate(token, "127.0.0.1"); err != nil || !p.CanAccess("q") {
+		t.Fatalf("scope after widen: all=%v err=%v", p.AllProjects, err)
+	}
+
+	if err := s.RevokePAT("ci"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Authenticate(token, "127.0.0.1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoked token: err=%v", err)
+	}
+	if err := s.DeletePAT("ci"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreatePAT("ci", false, nil); err != nil {
+		t.Fatalf("recreate after delete: err=%v", err)
+	}
+}

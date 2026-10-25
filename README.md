@@ -7,6 +7,7 @@
 - 跨平台路径：`~`、`$XDG_CONFIG_HOME`、`%APPDATA%` 等变量，可按 OS 覆盖路径或限定平台
 - WebUI 在线查看、编辑、对比历史版本、恢复；管理设备与授权
 - 设备通过 device code 登录，在 WebUI 审批并限定可访问的项目
+- PAT 在 WebUI 中创建并按项目授权，API 请求可直接使用，有效至吊销
 - 内容以 AES-256-GCM 加密落盘
 
 ## 部署服务端
@@ -86,6 +87,12 @@ go install github.com/jerrita/qcfg/cmd/qcfg@latest
 
 ```sh
 qcfg auth login --server https://cfg.example.com
+```
+
+脚本或无法走审批流程的场景，可在 WebUI 的 Tokens 页创建 PAT 后直接登录，跳过设备审批：
+
+```sh
+qcfg auth login --server https://cfg.example.com --token qcfg_pat_xxx
 ```
 
 在一台设备上添加文件（项目不存在时自动创建）：

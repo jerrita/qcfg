@@ -106,7 +106,7 @@ func New(st *store.Store, opts Options) http.Handler {
 		failures: map[string][]time.Time{},
 		verify:   make(chan struct{}, maxVerifies),
 	}
-	for _, p := range []string{"login", "projects", "project", "file", "history", "devices", "device", "activate"} {
+	for _, p := range []string{"login", "projects", "project", "file", "history", "devices", "device", "tokens", "token", "activate"} {
 		w.pages[p] = template.Must(template.New("layout.html").Funcs(funcs).
 			ParseFS(templateFS, "templates/layout.html", "templates/scope.html", "templates/"+p+".html"))
 	}
@@ -136,6 +136,12 @@ func New(st *store.Store, opts Options) http.Handler {
 	auth.HandleFunc("POST /devices/{d}/access", w.setDeviceAccess)
 	auth.HandleFunc("POST /devices/{d}/revoke", w.revokeDevice)
 	auth.HandleFunc("POST /devices/{d}/delete", w.deleteDevice)
+	auth.HandleFunc("GET /tokens", w.tokensPage)
+	auth.HandleFunc("POST /tokens", w.createToken)
+	auth.HandleFunc("GET /tokens/{t}", w.tokenPage)
+	auth.HandleFunc("POST /tokens/{t}/access", w.setTokenAccess)
+	auth.HandleFunc("POST /tokens/{t}/revoke", w.revokeToken)
+	auth.HandleFunc("POST /tokens/{t}/delete", w.deleteToken)
 	auth.HandleFunc("GET /activate", w.activatePage)
 	auth.HandleFunc("POST /activate", w.activate)
 	mux.Handle("/", w.requireSession(auth))
@@ -642,6 +648,92 @@ func (w *Web) deleteDevice(rw http.ResponseWriter, r *http.Request) {
 	back(rw, r, "/devices", "msg", "Device deleted")
 }
 
+// ---- access tokens ----
+
+func (w *Web) tokensPage(rw http.ResponseWriter, r *http.Request) {
+	if err := w.renderTokens(rw, r, nil, ""); err != nil {
+		notFound(rw, err)
+	}
+}
+
+// renderTokens renders the tokens page; newToken is the secret shown once.
+func (w *Web) renderTokens(rw http.ResponseWriter, r *http.Request, newToken *string, errMsg string) error {
+	ts, err := w.store.ListPATs()
+	if err != nil {
+		return err
+	}
+	scope, err := w.scopeData(false, nil)
+	if err != nil {
+		return err
+	}
+	data := map[string]any{"Tokens": ts}
+	for k, v := range scope {
+		data[k] = v
+	}
+	if newToken != nil {
+		data["NewToken"] = *newToken
+		data["Msg"] = "Token created"
+	}
+	if errMsg != "" {
+		data["Err"] = errMsg
+	}
+	w.render(rw, r, "tokens", "Access tokens", data)
+	return nil
+}
+
+func (w *Web) createToken(rw http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.FormValue("name"))
+	if !model.ValidDeviceName(name) {
+		_ = w.renderTokens(rw, r, nil, "Invalid token name")
+		return
+	}
+	token, err := w.store.CreatePAT(name, r.FormValue("all") != "", r.Form["project"])
+	if err != nil {
+		_ = w.renderTokens(rw, r, nil, errText(err))
+		return
+	}
+	_ = w.renderTokens(rw, r, &token, "")
+}
+
+func (w *Web) tokenPage(rw http.ResponseWriter, r *http.Request) {
+	t, err := w.store.GetPAT(r.PathValue("t"))
+	if notFound(rw, err) {
+		return
+	}
+	data, err := w.scopeData(t.AllProjects, t.Projects)
+	if notFound(rw, err) {
+		return
+	}
+	data["Token"] = t
+	w.render(rw, r, "token", "Token "+t.Name, data)
+}
+
+func (w *Web) setTokenAccess(rw http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("t")
+	to := "/tokens/" + url.PathEscape(name)
+	if err := w.store.SetPATAccess(name, r.FormValue("all") != "", r.Form["project"]); err != nil {
+		back(rw, r, to, "err", errText(err))
+		return
+	}
+	back(rw, r, to, "msg", "Access saved")
+}
+
+func (w *Web) revokeToken(rw http.ResponseWriter, r *http.Request) {
+	if err := w.store.RevokePAT(r.PathValue("t")); err != nil {
+		back(rw, r, "/tokens", "err", errText(err))
+		return
+	}
+	back(rw, r, "/tokens", "msg", "Token revoked")
+}
+
+func (w *Web) deleteToken(rw http.ResponseWriter, r *http.Request) {
+	if err := w.store.DeletePAT(r.PathValue("t")); err != nil {
+		back(rw, r, "/tokens", "err", errText(err))
+		return
+	}
+	back(rw, r, "/tokens", "msg", "Token deleted")
+}
+
 // ---- device activation ----
 
 func (w *Web) activatePage(rw http.ResponseWriter, r *http.Request) {
@@ -688,7 +780,7 @@ func (w *Web) activate(rw http.ResponseWriter, r *http.Request) {
 	if err := w.store.ApproveDeviceRequest(code, name, r.FormValue("all") != "", r.Form["project"]); err != nil {
 		msg := errText(err)
 		if errors.Is(err, store.ErrExists) {
-			msg = "Device name already in use"
+			msg = "Name already in use"
 		}
 		w.renderActivate(rw, r, code, msg)
 		return

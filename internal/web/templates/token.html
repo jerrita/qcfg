@@ -1,0 +1,10 @@
+{{define "content"}}
+<h1>Token {{.Token.Name}}</h1>
+<p class="muted">Created {{time .Token.CreatedAt}} · last used {{time .Token.LastSeenAt}}{{if .Token.LastIP}} from {{.Token.LastIP}}{{end}}{{if .Token.Revoked}} · <span class="err-text">revoked</span>{{end}}</p>
+<form method="post" action="/tokens/{{esc .Token.Name}}/access" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <h2>Project access</h2>
+  {{template "scope" .}}
+  <div class="row"><button>Save</button></div>
+</form>
+{{end}}
