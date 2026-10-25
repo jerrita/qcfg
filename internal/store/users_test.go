@@ -193,6 +193,13 @@ func TestMigrateAdmin(t *testing.T) {
 	if _, err := s.Setting("admin_password"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("legacy password setting: %v", err)
 	}
+	if err := s.SetAdminName(u.ID, "renamed-owner"); err != nil {
+		t.Fatal(err)
+	}
+	password = crypto.RandomString(18)
+	if err := s.SetAdminPassword(password); err != nil {
+		t.Fatal(err)
+	}
 	s.Close()
 	s, err = Open(path, key)
 	if err != nil {
@@ -200,7 +207,16 @@ func TestMigrateAdmin(t *testing.T) {
 	}
 	defer s.Close()
 	users, err := s.ListUsers()
-	if err != nil || len(users) != 1 {
+	if err != nil || len(users) != 1 || users[0].Name != "renamed-owner" || users[0].ID != u.ID {
 		t.Fatalf("repeated migration: %+v err=%v", users, err)
+	}
+	if _, err := s.AuthenticateUser("admin", password); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("previous username after restart: %v", err)
+	}
+	if renamed, err := s.AuthenticateUser("renamed-owner", password); err != nil || !renamed.Admin || renamed.ID != u.ID {
+		t.Fatalf("renamed administrator after restart: %+v err=%v", renamed, err)
+	}
+	if p, err := s.Authenticate(pat, "127.0.0.1"); err != nil || p.User.Name != "renamed-owner" {
+		t.Fatalf("PAT after username change: %+v err=%v", p, err)
 	}
 }

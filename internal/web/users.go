@@ -155,6 +155,26 @@ func (w *Web) userPage(rw http.ResponseWriter, r *http.Request) {
 	w.render(rw, r, "user", "User "+u.Name, data)
 }
 
+func (w *Web) setAdminName(rw http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("u"), 10, 64)
+	s, _ := sessionFrom(r)
+	if id != s.user.ID {
+		http.Error(rw, "access denied", http.StatusForbidden)
+		return
+	}
+	to := "/users/" + strconv.FormatInt(id, 10)
+	name := strings.TrimSpace(r.FormValue("username"))
+	if !model.ValidName(name) {
+		back(rw, r, to, "err", "Invalid username")
+		return
+	}
+	if err := w.store.SetAdminName(s.user.ID, name); err != nil {
+		back(rw, r, to, "err", errText(err))
+		return
+	}
+	back(rw, r, to, "msg", "Username saved")
+}
+
 func (w *Web) setUserAccess(rw http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("u"), 10, 64)
 	s, _ := sessionFrom(r)

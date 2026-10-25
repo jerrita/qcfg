@@ -2,6 +2,11 @@
 <h1><a href="/users">Users</a> / {{.Account.Name}}</h1>
 {{if .Account.Admin}}
 <p>Administrators can manage users and access all projects.</p>
+<form method="post" action="/users/{{.Account.ID}}/name" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Username <input name="username" value="{{.Account.Name}}" autocomplete="username" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,127}" required></label>
+  <button>Save username</button>
+</form>
 {{else}}
 <form method="post" action="/users/{{.Account.ID}}/access" class="card">
   <input type="hidden" name="csrf" value="{{.CSRF}}">

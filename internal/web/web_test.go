@@ -208,3 +208,63 @@ func TestUsersAndSharedProjectPermissions(t *testing.T) {
 		t.Fatalf("invalid CSRF: status=%d", rw.Code)
 	}
 }
+
+func TestAdminUsername(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "web.db"), crypto.RandomBytes(32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	password := crypto.RandomString(18)
+	owner, err := st.RegisterAdmin("owner", password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberPassword := crypto.RandomString(18)
+	if err := st.CreateUser(owner.ID, "member", memberPassword, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	h := New(st, Options{MaxFileSize: 4096})
+	admin := &browser{h: h}
+	admin.signIn(t, "/login", "owner", password)
+	to := "/users/" + strconv.FormatInt(owner.ID, 10)
+	if rw := admin.request(http.MethodGet, to, nil); rw.Code != http.StatusOK || !strings.Contains(rw.Body.String(), "Save username") {
+		t.Fatalf("username form: status=%d", rw.Code)
+	}
+	for _, name := range []string{"", "invalid name", "member"} {
+		rw := admin.request(http.MethodPost, to+"/name", url.Values{"username": {name}})
+		if rw.Code != http.StatusSeeOther || !strings.Contains(rw.Header().Get("Location"), "err=") {
+			t.Fatalf("invalid or duplicate username: status=%d", rw.Code)
+		}
+	}
+	rw := admin.request(http.MethodPost, to+"/name", url.Values{"username": {"new-owner"}})
+	if rw.Code != http.StatusSeeOther || strings.Contains(rw.Header().Get("Location"), "err=") {
+		t.Fatalf("rename administrator: status=%d", rw.Code)
+	}
+	if rw := admin.request(http.MethodGet, to, nil); rw.Code != http.StatusOK || !strings.Contains(rw.Body.String(), `value="new-owner"`) {
+		t.Fatalf("existing session after rename: status=%d", rw.Code)
+	}
+	fresh := &browser{h: h}
+	fresh.signIn(t, "/login", "new-owner", password)
+	old := &browser{h: h}
+	if rw := old.request(http.MethodPost, "/login", url.Values{"username": {"owner"}, "password": {password}}); len(rw.Result().Cookies()) != 0 || !strings.Contains(rw.Body.String(), "Wrong username or password") {
+		t.Fatalf("old username login: status=%d", rw.Code)
+	}
+	member, err := st.AuthenticateUser("member", memberPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberPath := "/users/" + strconv.FormatInt(member.ID, 10)
+	if rw := admin.request(http.MethodPost, memberPath+"/name", url.Values{"username": {"other"}}); rw.Code != http.StatusForbidden {
+		t.Fatalf("rename another account: status=%d", rw.Code)
+	}
+	user := &browser{h: h}
+	user.signIn(t, "/login", "member", memberPassword)
+	if rw := user.request(http.MethodPost, to+"/name", url.Values{"username": {"other"}}); rw.Code != http.StatusForbidden {
+		t.Fatalf("non-admin rename: status=%d", rw.Code)
+	}
+	admin.csrf = "invalid"
+	if rw := admin.request(http.MethodPost, to+"/name", url.Values{"username": {"other"}}); rw.Code != http.StatusForbidden {
+		t.Fatalf("rename without valid CSRF: status=%d", rw.Code)
+	}
+}

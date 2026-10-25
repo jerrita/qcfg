@@ -215,6 +215,17 @@ func (s *Store) SetUserAccess(adminID, userID int64, all bool, projects []string
 	return tx.Commit()
 }
 
+func (s *Store) SetAdminName(adminID int64, name string) error {
+	if !model.ValidName(name) {
+		return errors.New("invalid username")
+	}
+	res, err := s.db.Exec(`UPDATE user SET name=? WHERE id=? AND admin=1`, name, adminID)
+	if isUnique(err) {
+		return ErrExists
+	}
+	return affected(res, err)
+}
+
 func (s *Store) SetAdminPassword(password string) error {
 	if err := validateUser("admin", password); err != nil {
 		return err

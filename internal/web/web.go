@@ -123,6 +123,7 @@ func New(st *store.Store, opts Options) http.Handler {
 	auth.HandleFunc("GET /users", w.admin(w.usersPage))
 	auth.HandleFunc("POST /users", w.admin(w.createUser))
 	auth.HandleFunc("GET /users/{u}", w.admin(w.userPage))
+	auth.HandleFunc("POST /users/{u}/name", w.admin(w.setAdminName))
 	auth.HandleFunc("POST /users/{u}/access", w.admin(w.setUserAccess))
 	auth.HandleFunc("GET /{$}", w.projectsPage)
 	auth.HandleFunc("POST /projects", w.admin(w.createProject))
