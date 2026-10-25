@@ -220,3 +220,42 @@ func TestMigrateAdmin(t *testing.T) {
 		t.Fatalf("PAT after username change: %+v err=%v", p, err)
 	}
 }
+
+func TestMigrateUserAuthVersion(t *testing.T) {
+	path, key := filepath.Join(t.TempDir(), "users.db"), crypto.RandomBytes(32)
+	s, err := Open(path, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	password := crypto.RandomString(18)
+	owner, err := s.RegisterAdmin("owner", password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`ALTER TABLE user DROP COLUMN auth_version`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	u, err := s.AuthenticateUser("owner", password)
+	if err != nil || u.ID != owner.ID || u.AuthVersion != 1 {
+		t.Fatalf("migrated user: %+v err=%v", u, err)
+	}
+	newPassword := crypto.RandomString(18)
+	if err := s.SetAdminPassword(newPassword); err != nil {
+		t.Fatal(err)
+	}
+	u, err = s.AuthenticateUser("owner", newPassword)
+	if err != nil || u.AuthVersion != 2 {
+		t.Fatalf("password version: %+v err=%v", u, err)
+	}
+	if _, err := s.AuthenticateUser("owner", password); !errors.Is(err, ErrDenied) {
+		t.Fatalf("old password after reset: %v", err)
+	}
+}

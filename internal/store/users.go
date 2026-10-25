@@ -120,8 +120,8 @@ func grantUserProjects(db execer, id int64, projects []string) error {
 func (s *Store) GetUser(id int64) (model.User, error) {
 	var u model.User
 	var created int64
-	err := s.db.QueryRow(`SELECT id, name, admin, all_projects, created_at FROM user WHERE id=?`, id).
-		Scan(&u.ID, &u.Name, &u.Admin, &u.AllProjects, &created)
+	err := s.db.QueryRow(`SELECT id, name, admin, all_projects, created_at, auth_version FROM user WHERE id=?`, id).
+		Scan(&u.ID, &u.Name, &u.Admin, &u.AllProjects, &created, &u.AuthVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return u, ErrNotFound
 	}
@@ -146,9 +146,9 @@ func (s *Store) GetUser(id int64) (model.User, error) {
 }
 
 func (s *Store) AuthenticateUser(name, password string) (model.User, error) {
-	var id int64
+	var id, authVersion int64
 	var hash string
-	err := s.db.QueryRow(`SELECT id, password_hash FROM user WHERE name=?`, name).Scan(&id, &hash)
+	err := s.db.QueryRow(`SELECT id, password_hash, auth_version FROM user WHERE name=?`, name).Scan(&id, &hash, &authVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.User{}, ErrNotFound
 	}
@@ -158,7 +158,14 @@ func (s *Store) AuthenticateUser(name, password string) (model.User, error) {
 	if !crypto.VerifyPassword(hash, password) {
 		return model.User{}, ErrDenied
 	}
-	return s.GetUser(id)
+	u, err := s.GetUser(id)
+	if err != nil {
+		return u, err
+	}
+	if u.AuthVersion != authVersion {
+		return model.User{}, ErrDenied
+	}
+	return u, nil
 }
 
 func (s *Store) ListUsers() ([]model.User, error) {
@@ -230,7 +237,7 @@ func (s *Store) SetAdminPassword(password string) error {
 	if err := validateUser("admin", password); err != nil {
 		return err
 	}
-	return affected(s.db.Exec(`UPDATE user SET password_hash=? WHERE admin=1`, crypto.HashPassword(password)))
+	return affected(s.db.Exec(`UPDATE user SET password_hash=?, auth_version=auth_version+1 WHERE admin=1`, crypto.HashPassword(password)))
 }
 
 func (s *Store) validateAccess(userID int64, all bool, projects []string) error {

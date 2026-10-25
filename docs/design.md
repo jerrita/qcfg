@@ -41,7 +41,7 @@ qcfg <其它命令>      # 客户端
 ### 3.1 服务端
 
 ```
-user      (id, name UNIQUE, password_hash, admin, all_projects, created_at)
+user      (id, name UNIQUE, password_hash, auth_version, admin, all_projects, created_at)
 
 user_project (user_id, project_id)                   -- 用户可访问的项目
 
@@ -237,7 +237,9 @@ data/
 - token：`qcfg_` + 32 字节随机数（base62），服务端只存 SHA-256；可在 WebUI 吊销
 - PAT：`qcfg_pat_` + 32 字节随机数，同样只存 SHA-256，不过期，WebUI 中创建（明文仅显示一次）、按项目授权、吊销或删除
 - device code：32 字节随机数，服务端只存 SHA-256；用户码取自 20 个辅音字母，需用户登录后输入；每个 IP 同时待审批的请求数上限 3
-- WebUI：用户名与密码登录，密码使用 argon2id 哈希；首位用户通过注册创建管理员，后续用户由管理员创建。已有管理员账号的密码可由环境变量 `QCFG_ADMIN_PASSWORD` 在启动时覆盖，或用 `qcfg serve passwd` 修改。HttpOnly + SameSite=Strict 会话 cookie（会话保存在内存，重启后需重新登录），表单 CSRF token，同一 IP 15 分钟内失败 5 次即限速；每次请求读取当前用户权限
+- WebUI：用户名与密码登录，密码使用 argon2id 哈希；首位用户通过注册创建管理员，后续用户由管理员创建。已有管理员账号的密码可由环境变量 `QCFG_ADMIN_PASSWORD` 在启动时覆盖，或用 `qcfg serve passwd` 修改；密码修改递增 `auth_version`，每次请求核对版本并使旧会话失效。HttpOnly + SameSite=Strict 会话 cookie（会话保存在内存，重启后需重新登录）；直接 TLS 或反代转发的 HTTPS 访问设置 Secure。表单 CSRF token 与跨来源浏览器请求保护覆盖写操作、登录和注册。同一客户端 IP 的失败及进行中的校验合计最多 5 次，失败记录保留 15 分钟；校验并发满载返回 `429`，成功登录保留已有失败记录。每次请求读取当前用户权限
+- 反向代理：自动读取 `X-Forwarded-For` 中由代理追加的最后一个地址，以及 `X-Forwarded-Proto` 中的协议
+- 浏览器缓存：敏感 WebUI、JSON 和文件响应设置 `Cache-Control: no-store`；禁用 htmx 历史快照，加载时清理旧快照，恢复浏览器页面快照时重新请求服务端
 - 传输：内置 `--tls-cert/--tls-key`，或置于反向代理之后
 - 限制：单文件大小上限（默认 4 MiB），每文件保留版本数上限（默认 50，0 为不限）
 

@@ -58,6 +58,10 @@ qcfg serve --listen :8080 --data ./data
 - 管理员账号创建后，设置环境变量 `QCFG_ADMIN_PASSWORD` 会在后续启动时覆盖其密码；也可用 `qcfg serve passwd --data ./data` 修改（Docker 中为 `docker exec -it qcfg /qcfg serve passwd --data /data`），密码至少 8 位
 - 加密密钥可由环境变量 `QCFG_MASTER_KEY`（64 位十六进制）提供；备份时需同时备份数据库与密钥
 
+Traefik 提供 HTTPS、qcfg 使用 HTTP 时可沿用现有部署。qcfg 自动读取 `X-Forwarded-For` 中由代理追加的客户端地址和 `X-Forwarded-Proto`，按客户端 IP 限流，并为 HTTPS 访问设置 Secure Cookie。
+
+运行期间通过 `qcfg serve passwd` 重置管理员密码会使已有 WebUI 会话失效。敏感响应禁止缓存，WebUI 禁用 htmx 历史快照，并在加载时清理旧快照。
+
 ## 安装客户端
 
 一键安装最新 release（Linux x64/arm64、macOS arm64），默认安装到 `~/.local/bin`，可用 `QCFG_INSTALL_DIR` 指定：

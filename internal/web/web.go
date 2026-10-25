@@ -62,6 +62,7 @@ type Web struct {
 	mu       sync.Mutex
 	sessions map[string]session
 	failures map[string][]time.Time
+	inFlight map[string]int
 	verify   chan struct{}
 }
 
@@ -103,6 +104,7 @@ func New(st *store.Store, opts Options) http.Handler {
 		pages:    map[string]*template.Template{},
 		sessions: map[string]session{},
 		failures: map[string][]time.Time{},
+		inFlight: map[string]int{},
 		verify:   make(chan struct{}, maxVerifies),
 	}
 	for _, p := range []string{"login", "register", "users", "user", "projects", "project", "file", "history", "devices", "device", "tokens", "token", "activate"} {
@@ -151,7 +153,13 @@ func New(st *store.Store, opts Options) http.Handler {
 	auth.HandleFunc("GET /activate", w.activatePage)
 	auth.HandleFunc("POST /activate", w.activate)
 	mux.Handle("/", w.requireSession(auth))
-	return mux
+	protected := http.NewCrossOriginProtection().Handler(mux)
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/static/") {
+			rw.Header().Set("Cache-Control", "no-store")
+		}
+		protected.ServeHTTP(rw, r)
+	})
 }
 
 // ---- sessions ----
@@ -171,6 +179,12 @@ func (w *Web) currentSession(r *http.Request) (session, bool) {
 	w.mu.Unlock()
 	u, err := w.store.GetUser(s.user.ID)
 	if err != nil {
+		return session{}, false
+	}
+	if u.AuthVersion != s.user.AuthVersion {
+		w.mu.Lock()
+		delete(w.sessions, c.Value)
+		w.mu.Unlock()
 		return session{}, false
 	}
 	s.user = u
@@ -249,20 +263,13 @@ func (w *Web) loginPage(rw http.ResponseWriter, r *http.Request) {
 
 func (w *Web) login(rw http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(rw, r.Body, 64<<10)
-	ip := limitKey(server.ClientIP(r))
-	if w.blocked(ip) {
-		w.render(rw, r, "login", "Login", map[string]any{"Err": "Too many failed attempts, try again later", "Next": nextURL(r)})
-		return
-	}
-	select {
-	case w.verify <- struct{}{}:
-	case <-r.Context().Done():
+	done, ok := w.acquireVerify(rw, r)
+	if !ok {
 		return
 	}
 	u, err := w.store.AuthenticateUser(strings.TrimSpace(r.FormValue("username")), r.FormValue("password"))
-	<-w.verify
+	done(err != nil)
 	if err != nil {
-		w.fail(ip)
 		w.render(rw, r, "login", "Login", map[string]any{"Err": "Wrong username or password", "Next": nextURL(r)})
 		return
 	}
@@ -272,7 +279,6 @@ func (w *Web) login(rw http.ResponseWriter, r *http.Request) {
 func (w *Web) startSession(rw http.ResponseWriter, r *http.Request, u model.User) {
 	id := crypto.RandomString(32)
 	w.mu.Lock()
-	delete(w.failures, limitKey(server.ClientIP(r)))
 	for k, s := range w.sessions {
 		if time.Now().After(s.expires) {
 			delete(w.sessions, k)
@@ -281,7 +287,7 @@ func (w *Web) startSession(rw http.ResponseWriter, r *http.Request, u model.User
 	w.sessions[id] = session{user: u, csrf: crypto.RandomString(24), expires: time.Now().Add(sessionTTL)}
 	w.mu.Unlock()
 	http.SetCookie(rw, &http.Cookie{
-		Name: cookieName, Value: id, Path: "/", HttpOnly: true, Secure: w.opts.SecureOnly,
+		Name: cookieName, Value: id, Path: "/", HttpOnly: true, Secure: w.opts.SecureOnly || server.IsHTTPS(r),
 		SameSite: http.SameSiteStrictMode, MaxAge: int(sessionTTL.Seconds()),
 	})
 	http.Redirect(rw, r, nextURL(r), http.StatusSeeOther)
@@ -293,11 +299,13 @@ func (w *Web) logout(rw http.ResponseWriter, r *http.Request) {
 		delete(w.sessions, c.Value)
 		w.mu.Unlock()
 	}
-	http.SetCookie(rw, &http.Cookie{Name: cookieName, Path: "/", MaxAge: -1})
+	http.SetCookie(rw, &http.Cookie{Name: cookieName, Path: "/", MaxAge: -1, HttpOnly: true,
+		Secure: w.opts.SecureOnly || server.IsHTTPS(r), SameSite: http.SameSiteStrictMode})
 	http.Redirect(rw, r, "/login", http.StatusSeeOther)
 }
 
-func (w *Web) blocked(ip string) bool {
+// beginAttempt reserves a place in the failure budget before checking a password.
+func (w *Web) beginAttempt(ip string) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	cut := time.Now().Add(-failWindow)
@@ -311,7 +319,45 @@ func (w *Web) blocked(ip string) bool {
 			w.failures[k] = fs
 		}
 	}
-	return len(w.failures[ip]) >= maxFailures
+	if len(w.failures[ip])+w.inFlight[ip] >= maxFailures {
+		return false
+	}
+	w.inFlight[ip]++
+	return true
+}
+
+func (w *Web) finishAttempt(ip string, failed bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.inFlight[ip]--
+	if w.inFlight[ip] == 0 {
+		delete(w.inFlight, ip)
+	}
+	if failed {
+		w.failures[ip] = append(w.failures[ip], time.Now())
+	}
+}
+
+func (w *Web) acquireVerify(rw http.ResponseWriter, r *http.Request) (func(bool), bool) {
+	ip := limitKey(server.ClientIP(r))
+	if !w.beginAttempt(ip) {
+		http.Error(rw, "Too many failed attempts, try again later", http.StatusTooManyRequests)
+		return nil, false
+	}
+	select {
+	case w.verify <- struct{}{}:
+		return func(failed bool) {
+			w.finishAttempt(ip, failed)
+			<-w.verify
+		}, true
+	case <-r.Context().Done():
+		w.finishAttempt(ip, false)
+		return nil, false
+	default:
+		w.finishAttempt(ip, false)
+		http.Error(rw, "Server busy, try again later", http.StatusTooManyRequests)
+		return nil, false
+	}
 }
 
 // limitKey groups IPv6 addresses by /64 for login rate limiting.
@@ -321,12 +367,6 @@ func limitKey(ip string) string {
 		return ip
 	}
 	return a.Mask(net.CIDRMask(64, 128)).String() + "/64"
-}
-
-func (w *Web) fail(ip string) {
-	w.mu.Lock()
-	w.failures[ip] = append(w.failures[ip], time.Now())
-	w.mu.Unlock()
 }
 
 // ---- rendering ----

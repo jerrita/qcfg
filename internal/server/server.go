@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"slices"
 	"strconv"
@@ -54,15 +53,6 @@ func New(st *store.Store, opts Options, web http.Handler) http.Handler {
 	return mux
 }
 
-// ClientIP returns the remote IP of r.
-func ClientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
-
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -107,6 +97,7 @@ func (s *Server) scoped(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
@@ -354,6 +345,7 @@ func (s *Server) getRaw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Qcfg-Rev", strconv.FormatInt(v.Rev, 10))
 	w.Header().Set("X-Qcfg-Sha256", v.Sha256)
 	_, _ = w.Write(data)

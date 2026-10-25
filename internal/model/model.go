@@ -54,6 +54,7 @@ type Device struct {
 
 type User struct {
 	ID          int64
+	AuthVersion int64 `json:"-"`
 	Name        string
 	Admin       bool
 	AllProjects bool

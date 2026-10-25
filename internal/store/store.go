@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS user (
 	id INTEGER PRIMARY KEY,
 	name TEXT NOT NULL UNIQUE,
 	password_hash TEXT NOT NULL,
+	auth_version INTEGER NOT NULL DEFAULT 1,
 	admin INTEGER NOT NULL DEFAULT 0,
 	all_projects INTEGER NOT NULL DEFAULT 0,
 	created_at INTEGER NOT NULL
@@ -146,6 +147,14 @@ func Open(path string, key []byte) (*Store, error) {
 // created by older versions; fresh databases get them from the schema.
 func migrate(db *sql.DB) error {
 	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('user') WHERE name='auth_version'`).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		if _, err := db.Exec(`ALTER TABLE user ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1`); err != nil {
+			return err
+		}
+	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('device') WHERE name='kind'`).Scan(&n); err != nil {
 		return err
 	}

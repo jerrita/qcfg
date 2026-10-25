@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/jerrita/qcfg/internal/model"
-	"github.com/jerrita/qcfg/internal/server"
 	"github.com/jerrita/qcfg/internal/store"
 )
 
@@ -75,24 +74,18 @@ func (w *Web) register(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "registration closed", http.StatusForbidden)
 		return
 	}
-	ip := limitKey(server.ClientIP(r))
-	if w.blocked(ip) {
-		http.Error(rw, "too many attempts, try again later", http.StatusTooManyRequests)
+	done, ok := w.acquireVerify(rw, r)
+	if !ok {
 		return
 	}
 	name, password := strings.TrimSpace(r.FormValue("username")), r.FormValue("password")
 	if !validCredentials(name, password) {
-		w.fail(ip)
+		done(true)
 		w.render(rw, r, "register", "Create administrator", map[string]any{"Err": "Use a valid username and a password between 8 and 1024 characters"})
 		return
 	}
-	select {
-	case w.verify <- struct{}{}:
-	case <-r.Context().Done():
-		return
-	}
 	u, err := w.store.RegisterAdmin(name, password)
-	<-w.verify
+	done(err != nil)
 	if err == store.ErrDenied {
 		http.Error(rw, "registration closed", http.StatusForbidden)
 		return

@@ -5,9 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}} · qcfg</title>
 <link rel="stylesheet" href="/static/style.css">
+<meta name="htmx-config" content='{"historyCacheSize":0}'>
+<script src="/static/security.js"></script>
 <script src="/static/htmx.min.js"></script>
 </head>
-<body hx-boost="true"{{if .CSRF}} hx-headers='{"X-CSRF-Token": "{{.CSRF}}"}'{{end}}>
+<body hx-boost="true" hx-history="false"{{if .CSRF}} hx-headers='{"X-CSRF-Token": "{{.CSRF}}"}'{{end}}>
 <header>
   <a class="brand" href="/">qcfg</a>
   {{if .LoggedIn}}
