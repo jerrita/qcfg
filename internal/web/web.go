@@ -149,6 +149,7 @@ func New(st *store.Store, opts Options) http.Handler {
 	auth.HandleFunc("GET /tokens", w.tokensPage)
 	auth.HandleFunc("POST /tokens", w.createToken)
 	auth.HandleFunc("GET /tokens/{t}", w.owned(w.tokenPage, true))
+	auth.HandleFunc("GET /tokens/{t}/secret", w.owned(w.tokenSecret, true))
 	auth.HandleFunc("POST /tokens/{t}/access", w.owned(w.setTokenAccess, true))
 	auth.HandleFunc("POST /tokens/{t}/revoke", w.owned(w.revokeToken, true))
 	auth.HandleFunc("POST /tokens/{t}/delete", w.owned(w.deleteToken, true))
@@ -743,7 +744,7 @@ func (w *Web) tokensPage(rw http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// renderTokens renders the tokens page; newToken is the secret shown once.
+// renderTokens renders the tokens page, including a newly created token.
 func (w *Web) renderTokens(rw http.ResponseWriter, r *http.Request, newToken *string, errMsg string) error {
 	ts, err := w.store.ListPATs()
 	if err != nil {
@@ -796,6 +797,15 @@ func (w *Web) tokenPage(rw http.ResponseWriter, r *http.Request) {
 	}
 	data["Token"] = t
 	w.render(rw, r, "token", "Token "+t.Name, data)
+}
+
+func (w *Web) tokenSecret(rw http.ResponseWriter, r *http.Request) {
+	secret, err := w.store.PATSecret(r.PathValue("t"))
+	if notFound(rw, err) {
+		return
+	}
+	rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(rw, secret)
 }
 
 func (w *Web) setTokenAccess(rw http.ResponseWriter, r *http.Request) {

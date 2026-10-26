@@ -2,8 +2,7 @@
 <h1>Access tokens</h1>
 {{if .NewToken}}
 <div class="card">
-  <h2>Copy your token now</h2>
-  <p class="muted">It is shown only this once and cannot be recovered.</p>
+  <h2>Token created</h2>
   <pre>{{.NewToken}}</pre>
 </div>
 {{end}}
@@ -25,6 +24,7 @@
     <td>{{if .Revoked}}<span class="err-text">revoked</span>{{else}}active{{end}}</td>
     <td class="actions">
       {{if not .Revoked}}
+      <button type="button" class="link" data-copy-token="/tokens/{{esc .Name}}/secret" aria-live="polite">copy</button>
       <form method="post" action="/tokens/{{esc .Name}}/revoke" class="inline" hx-confirm="Revoke {{.Name}}?">
         <input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link">revoke</button>
       </form>

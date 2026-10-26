@@ -102,6 +102,11 @@ CREATE TABLE IF NOT EXISTS device (
 	all_projects INTEGER NOT NULL DEFAULT 0,
 	kind         TEXT NOT NULL DEFAULT 'device'
 );
+CREATE TABLE IF NOT EXISTS pat_secret (
+	device_id  INTEGER PRIMARY KEY REFERENCES device(id) ON DELETE CASCADE,
+	nonce      BLOB NOT NULL,
+	ciphertext BLOB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS device_project (
 	device_id  INTEGER NOT NULL REFERENCES device(id) ON DELETE CASCADE,
 	project_id INTEGER NOT NULL REFERENCES project(id) ON DELETE CASCADE,
@@ -676,6 +681,21 @@ func (s *Store) GetDevice(name string) (model.Device, error) { return s.getByKin
 
 func (s *Store) GetPAT(name string) (model.Device, error) { return s.getByKind(kindPAT, name) }
 
+func (s *Store) PATSecret(name string) (string, error) {
+	var nonce, ciphertext []byte
+	err := s.db.QueryRow(`SELECT s.nonce, s.ciphertext FROM pat_secret s
+		JOIN device d ON d.id=s.device_id WHERE d.name=? AND d.kind='pat' AND d.revoked=0`, name).
+		Scan(&nonce, &ciphertext)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	plaintext, err := crypto.Open(s.key, nonce, ciphertext)
+	return string(plaintext), err
+}
+
 // Principal is an authenticated device and the projects it may access.
 type Principal struct {
 	ID          int64
@@ -729,8 +749,7 @@ func (s *Store) GrantProject(deviceID int64, project string) error {
 	return grantProjects(s.db, deviceID, []string{project})
 }
 
-// CreatePAT creates a personal access token and returns its secret, which is
-// never stored or shown again.
+// CreatePAT creates a personal access token and stores its secret encrypted.
 func (s *Store) CreatePAT(userID int64, name string, all bool, projects []string) (string, error) {
 	if err := s.validateAccess(userID, all, projects); err != nil {
 		return "", err
@@ -741,6 +760,10 @@ func (s *Store) CreatePAT(userID int64, name string, all bool, projects []string
 	}
 	defer tx.Rollback()
 	token := crypto.NewPAT()
+	nonce, ciphertext, err := crypto.Seal(s.key, []byte(token))
+	if err != nil {
+		return "", err
+	}
 	res, err := tx.Exec(`INSERT INTO device(name, token_hash, created_at, all_projects, kind, user_id)
 		VALUES(?,?,?,?,?,?)`, name, crypto.HashToken(token), now(), all, kindPAT, userID)
 	if isUnique(err) {
@@ -751,6 +774,9 @@ func (s *Store) CreatePAT(userID int64, name string, all bool, projects []string
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
+		return "", err
+	}
+	if _, err := tx.Exec(`INSERT INTO pat_secret(device_id, nonce, ciphertext) VALUES(?,?,?)`, id, nonce, ciphertext); err != nil {
 		return "", err
 	}
 	if !all {

@@ -164,6 +164,26 @@ func TestUsersAndSharedProjectPermissions(t *testing.T) {
 			t.Fatalf("credential list %s: status=%d", path, rw.Code)
 		}
 	}
+	for _, path := range []string{"/tokens", "/tokens/member-token"} {
+		rw := user.request(http.MethodGet, path, nil)
+		if rw.Code != http.StatusOK || !strings.Contains(rw.Body.String(), `data-copy-token="/tokens/member-token/secret"`) || strings.Contains(rw.Body.String(), memberToken) {
+			t.Fatalf("token copy button %s: status=%d", path, rw.Code)
+		}
+	}
+	for _, b := range []*browser{user, admin} {
+		rw := b.request(http.MethodGet, "/tokens/member-token/secret", nil)
+		if rw.Code != http.StatusOK || rw.Body.String() != memberToken || rw.Header().Get("Cache-Control") != "no-store" || rw.Header().Get("Content-Type") != "text/plain; charset=utf-8" {
+			t.Fatalf("token copy: status=%d", rw.Code)
+		}
+	}
+	for _, path := range []string{"/tokens/owner-token/secret", "/tokens/owner-device/secret"} {
+		if rw := user.request(http.MethodGet, path, nil); rw.Code != http.StatusNotFound {
+			t.Fatalf("foreign token copy: status=%d", rw.Code)
+		}
+	}
+	if rw := (&browser{h: h}).request(http.MethodGet, "/tokens/member-token/secret", nil); rw.Code != http.StatusSeeOther || strings.Contains(rw.Body.String(), memberToken) {
+		t.Fatalf("unauthenticated token copy: status=%d", rw.Code)
+	}
 	api := func(method, path, token, body string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, "/api/v1"+path, strings.NewReader(body))
 		r.Header.Set("Authorization", "Bearer "+token)
@@ -206,6 +226,15 @@ func TestUsersAndSharedProjectPermissions(t *testing.T) {
 	user.csrf = "invalid"
 	if rw := user.request(http.MethodPost, "/tokens", nil); rw.Code != http.StatusForbidden {
 		t.Fatalf("invalid CSRF: status=%d", rw.Code)
+	}
+	if err := st.RevokePAT("member-token"); err != nil {
+		t.Fatal(err)
+	}
+	if rw := user.request(http.MethodGet, "/tokens/member-token/secret", nil); rw.Code != http.StatusNotFound {
+		t.Fatalf("revoked token copy: status=%d", rw.Code)
+	}
+	if rw := user.request(http.MethodGet, "/tokens", nil); strings.Contains(rw.Body.String(), `data-copy-token="/tokens/member-token/secret"`) {
+		t.Fatal("revoked token has copy button")
 	}
 }
 

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -54,7 +55,8 @@ func TestPut(t *testing.T) {
 }
 
 func TestPAT(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "t.db"), crypto.RandomBytes(32))
+	path, key := filepath.Join(t.TempDir(), "t.db"), crypto.RandomBytes(32)
+	s, err := Open(path, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,6 +76,24 @@ func TestPAT(t *testing.T) {
 	}
 	if _, err := s.CreatePAT(u.ID, "ci", false, nil); !errors.Is(err, ErrExists) {
 		t.Fatalf("duplicate name: err=%v", err)
+	}
+	var ciphertext []byte
+	if err := s.db.QueryRow(`SELECT ciphertext FROM pat_secret`).Scan(&ciphertext); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(ciphertext, []byte(token)) {
+		t.Fatal("token stored without encryption")
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if secret, err := s.PATSecret("ci"); err != nil || secret != token {
+		t.Fatalf("persisted token retrieval: err=%v", err)
 	}
 
 	p, err := s.Authenticate(token, "127.0.0.1")
@@ -108,8 +128,15 @@ func TestPAT(t *testing.T) {
 	if _, err := s.Authenticate(token, "127.0.0.1"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("revoked token: err=%v", err)
 	}
+	if _, err := s.PATSecret("ci"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoked token retrieval: err=%v", err)
+	}
 	if err := s.DeletePAT("ci"); err != nil {
 		t.Fatal(err)
+	}
+	var secrets int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM pat_secret`).Scan(&secrets); err != nil || secrets != 0 {
+		t.Fatalf("deleted token secret retained: count=%d err=%v", secrets, err)
 	}
 	if _, err := s.CreatePAT(u.ID, "ci", false, nil); err != nil {
 		t.Fatalf("recreate after delete: err=%v", err)
