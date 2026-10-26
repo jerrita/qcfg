@@ -18,7 +18,7 @@
     <a href="/devices">Devices</a>
     <a href="/tokens">Tokens</a>
     {{if .Admin}}<a href="/users">Users</a>{{end}}
-    <span>{{.User.Name}}</span>
+    <a href="/account">{{.User.Name}}</a>
     <form method="post" action="/logout" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="link">Logout</button></form>
   </nav>
   {{end}}

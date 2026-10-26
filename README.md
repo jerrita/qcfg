@@ -55,6 +55,7 @@ qcfg serve --listen :8080 --data ./data
 
 - 首次访问 WebUI 时注册管理员账号，注册完成后关闭公开注册。管理员在 Users 页创建用户、分配或调整项目权限；普通用户管理获授权项目中的文件，项目的新建、修改与删除由管理员执行
 - 旧版本升级时自动迁移为用户名 `admin`，沿用原管理员密码，保留项目、设备和 Token，并关闭注册；管理员可在 Users 页进入自己的账号修改用户名
+- 所有用户均可点击顶部用户名，输入当前密码、新密码及确认密码进行改密；成功后该账号全部 WebUI 会话失效，需用新密码重新登录
 - 管理员账号创建后，设置环境变量 `QCFG_ADMIN_PASSWORD` 会在后续启动时覆盖其密码；也可用 `qcfg serve passwd --data ./data` 修改（Docker 中为 `docker exec -it qcfg /qcfg serve passwd --data /data`），密码至少 8 位
 - 加密密钥可由环境变量 `QCFG_MASTER_KEY`（64 位十六进制）提供；备份时需同时备份数据库与密钥
 

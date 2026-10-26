@@ -240,6 +240,36 @@ func (s *Store) SetAdminPassword(password string) error {
 	return affected(s.db.Exec(`UPDATE user SET password_hash=?, auth_version=auth_version+1 WHERE admin=1`, crypto.HashPassword(password)))
 }
 
+func (s *Store) ChangeUserPassword(userID, authVersion int64, current, password string) error {
+	if err := validateUser("admin", password); err != nil {
+		return err
+	}
+	var hash string
+	err := s.db.QueryRow(`SELECT password_hash FROM user WHERE id=? AND auth_version=?`, userID, authVersion).Scan(&hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrDenied
+	}
+	if err != nil {
+		return err
+	}
+	if !crypto.VerifyPassword(hash, current) {
+		return ErrDenied
+	}
+	res, err := s.db.Exec(`UPDATE user SET password_hash=?, auth_version=auth_version+1
+		WHERE id=? AND auth_version=? AND password_hash=?`, crypto.HashPassword(password), userID, authVersion, hash)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrDenied
+	}
+	return nil
+}
+
 func (s *Store) validateAccess(userID int64, all bool, projects []string) error {
 	u, err := s.GetUser(userID)
 	if err != nil {

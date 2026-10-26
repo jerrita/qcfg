@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -98,6 +99,42 @@ func (w *Web) register(rw http.ResponseWriter, r *http.Request) {
 
 func validCredentials(name, password string) bool {
 	return model.ValidName(name) && len(password) >= 8 && len(password) <= 1024
+}
+
+func (w *Web) accountPage(rw http.ResponseWriter, r *http.Request) {
+	w.render(rw, r, "account", "Account", nil)
+}
+
+func (w *Web) changePassword(rw http.ResponseWriter, r *http.Request) {
+	s, _ := sessionFrom(r)
+	current, password := r.FormValue("current_password"), r.FormValue("password")
+	if !validCredentials(s.user.Name, password) {
+		back(rw, r, "/account", "err", "Password must be between 8 and 1024 characters")
+		return
+	}
+	if password != r.FormValue("confirm_password") {
+		back(rw, r, "/account", "err", "Passwords do not match")
+		return
+	}
+	if current == "" || len(current) > 1024 {
+		back(rw, r, "/account", "err", "Current password is incorrect")
+		return
+	}
+	done, ok := w.acquireVerify(rw, r)
+	if !ok {
+		return
+	}
+	err := w.store.ChangeUserPassword(s.user.ID, s.user.AuthVersion, current, password)
+	done(err != nil)
+	if errors.Is(err, store.ErrDenied) {
+		back(rw, r, "/account", "err", "Current password is incorrect or has changed")
+		return
+	}
+	if err != nil {
+		back(rw, r, "/account", "err", errText(err))
+		return
+	}
+	w.logout(rw, r)
 }
 
 func (w *Web) usersPage(rw http.ResponseWriter, r *http.Request) {

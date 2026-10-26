@@ -107,7 +107,7 @@ func New(st *store.Store, opts Options) http.Handler {
 		inFlight: map[string]int{},
 		verify:   make(chan struct{}, maxVerifies),
 	}
-	for _, p := range []string{"login", "register", "users", "user", "projects", "project", "file", "history", "devices", "device", "tokens", "token", "activate"} {
+	for _, p := range []string{"login", "register", "account", "users", "user", "projects", "project", "file", "history", "devices", "device", "tokens", "token", "activate"} {
 		w.pages[p] = template.Must(template.New("layout.html").Funcs(funcs).
 			ParseFS(templateFS, "templates/layout.html", "templates/scope.html", "templates/"+p+".html"))
 	}
@@ -122,6 +122,8 @@ func New(st *store.Store, opts Options) http.Handler {
 
 	auth := http.NewServeMux()
 	auth.HandleFunc("POST /logout", w.logout)
+	auth.HandleFunc("GET /account", w.accountPage)
+	auth.HandleFunc("POST /account/password", w.changePassword)
 	auth.HandleFunc("GET /users", w.admin(w.usersPage))
 	auth.HandleFunc("POST /users", w.admin(w.createUser))
 	auth.HandleFunc("GET /users/{u}", w.admin(w.userPage))

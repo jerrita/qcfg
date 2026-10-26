@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +14,80 @@ import (
 	"github.com/jerrita/qcfg/internal/server"
 	"github.com/jerrita/qcfg/internal/store"
 )
+
+func TestSelfServicePasswordChange(t *testing.T) {
+	for _, name := range []string{"owner", "member"} {
+		t.Run(name, func(t *testing.T) {
+			st, _, ownerPassword := securityStore(t)
+			owner, err := st.AuthenticateUser("owner", ownerPassword)
+			if err != nil {
+				t.Fatal(err)
+			}
+			password := ownerPassword
+			if name == "member" {
+				password = crypto.RandomString(18)
+				if err := st.CreateUser(owner.ID, name, password, false, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h := New(st, Options{MaxFileSize: 4096})
+			b, other := &browser{h: h}, &browser{h: h}
+			b.signIn(t, "/login", name, password)
+			other.signIn(t, "/login", name, password)
+			if rw := b.request(http.MethodGet, "/account", nil); rw.Code != http.StatusOK || !strings.Contains(rw.Body.String(), `action="/account/password"`) || !strings.Contains(rw.Body.String(), `href="/account"`) {
+				t.Fatalf("account page: status=%d", rw.Code)
+			}
+			newPassword := crypto.RandomString(18)
+			form := url.Values{"current_password": {password}, "password": {newPassword}, "confirm_password": {newPassword}}
+			csrf := b.csrf
+			b.csrf = "invalid"
+			if rw := b.request(http.MethodPost, "/account/password", form); rw.Code != http.StatusForbidden {
+				t.Fatalf("invalid CSRF: status=%d", rw.Code)
+			}
+			b.csrf = csrf
+			for _, invalid := range []struct{ field, value string }{
+				{"current_password", crypto.RandomString(18)},
+				{"confirm_password", crypto.RandomString(18)},
+				{"password", "short"},
+				{"password", strings.Repeat("x", 1025)},
+			} {
+				value := form.Get(invalid.field)
+				form.Set(invalid.field, invalid.value)
+				rw := b.request(http.MethodPost, "/account/password", form)
+				if rw.Code != http.StatusSeeOther || !strings.HasPrefix(rw.Header().Get("Location"), "/account?err=") {
+					t.Fatalf("invalid %s: status=%d", invalid.field, rw.Code)
+				}
+				form.Set(invalid.field, value)
+			}
+			if _, err := st.AuthenticateUser(name, password); err != nil {
+				t.Fatalf("rejected change modified password: %v", err)
+			}
+			rw := b.request(http.MethodPost, "/account/password", form)
+			if rw.Code != http.StatusSeeOther || rw.Header().Get("Location") != "/login" {
+				t.Fatalf("change password: status=%d", rw.Code)
+			}
+			cookies := rw.Result().Cookies()
+			if len(cookies) != 1 || cookies[0].MaxAge != -1 {
+				t.Fatal("password change did not clear cookie")
+			}
+			for _, session := range []*browser{b, other} {
+				if rw := session.request(http.MethodGet, "/account", nil); rw.Code != http.StatusSeeOther || !strings.HasPrefix(rw.Header().Get("Location"), "/login") {
+					t.Fatalf("old session survived change: status=%d", rw.Code)
+				}
+			}
+			if _, err := st.AuthenticateUser(name, password); !errors.Is(err, store.ErrDenied) {
+				t.Fatalf("old password after change: %v", err)
+			}
+			fresh := &browser{h: h}
+			fresh.signIn(t, "/login", name, newPassword)
+			if name == "member" {
+				if _, err := st.AuthenticateUser("owner", ownerPassword); err != nil {
+					t.Fatalf("member change affected administrator: %v", err)
+				}
+			}
+		})
+	}
+}
 
 func securityStore(t *testing.T) (*store.Store, string, string) {
 	t.Helper()

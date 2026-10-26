@@ -1,0 +1,12 @@
+{{define "content"}}
+<h1>Account / {{.User.Name}}</h1>
+<form method="post" action="/account/password" class="card narrow">
+  <h2>Change password</h2>
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Current password <input type="password" name="current_password" autocomplete="current-password" required></label>
+  <label>New password <input type="password" name="password" autocomplete="new-password" minlength="8" maxlength="1024" required></label>
+  <label>Confirm new password <input type="password" name="confirm_password" autocomplete="new-password" minlength="8" maxlength="1024" required></label>
+  <p>Changing your password signs out all your WebUI sessions. Sign in again with your new password.</p>
+  <button>Change password</button>
+</form>
+{{end}}

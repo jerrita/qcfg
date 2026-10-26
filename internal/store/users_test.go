@@ -11,6 +11,46 @@ import (
 	"github.com/jerrita/qcfg/internal/crypto"
 )
 
+func TestConcurrentPasswordChanges(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "test.db"), crypto.RandomBytes(32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	password := crypto.RandomString(18)
+	u, err := s.RegisterAdmin("owner", password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for range 2 {
+		wg.Go(func() {
+			errs <- s.ChangeUserPassword(u.ID, u.AuthVersion, password, crypto.RandomString(18))
+		})
+	}
+	wg.Wait()
+	close(errs)
+	var changed, denied int
+	for err := range errs {
+		switch {
+		case err == nil:
+			changed++
+		case errors.Is(err, ErrDenied):
+			denied++
+		default:
+			t.Fatal(err)
+		}
+	}
+	if changed != 1 || denied != 1 {
+		t.Fatalf("changed=%d denied=%d", changed, denied)
+	}
+	updated, err := s.GetUser(u.ID)
+	if err != nil || updated.AuthVersion != u.AuthVersion+1 {
+		t.Fatalf("password version: got=%d err=%v", updated.AuthVersion, err)
+	}
+}
+
 func TestRegistrationClosesAtomically(t *testing.T) {
 	path, key := filepath.Join(t.TempDir(), "test.db"), crypto.RandomBytes(32)
 	s, err := Open(path, key)
