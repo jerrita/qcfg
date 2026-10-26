@@ -151,7 +151,7 @@ qcfg diff proj-a/config.json            # 查看差异后手动编辑，再 --ou
 ## 5. CLI
 
 ```
-qcfg auth login [--server URL] [--name NAME] [--token TOKEN]
+qcfg auth login [--name NAME] [--token TOKEN]
 qcfg auth logout
 qcfg auth status
 
@@ -178,6 +178,8 @@ qcfg serve passwd                # 设置 WebUI 管理员密码
 - 管理员设备执行 `add` 时自动创建不存在的项目；普通用户需先由管理员创建并授权项目
 - `--force`：跳过冲突检查，强制覆盖
 - 全局参数：`--dry-run`、`--json`（机器可读输出）
+
+服务端默认使用 `https://ctrl.jerrita.cn`；自定义地址仅通过手动编辑 `config.toml` 的 `server` 字段设置。
 
 `auth login` 流程（device code）：
 

@@ -20,7 +20,7 @@ const defaultServer = "https://ctrl.jerrita.cn"
 func authCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "auth", Short: "Manage server credentials"}
 
-	var server, name, token string
+	var name, token string
 	login := &cobra.Command{
 		Use:   "login",
 		Short: "Log in by approving this device in the WebUI, or with a token",
@@ -30,16 +30,11 @@ func authCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			server := strings.TrimSpace(cfg.Server)
 			if server == "" {
-				def := cfg.Server
-				if def == "" {
-					def = defaultServer
-				}
-				if server, err = prompt(bufio.NewReader(os.Stdin), "Server URL", def); err != nil {
-					return err
-				}
+				server = defaultServer
 			}
-			server = strings.TrimRight(strings.TrimSpace(server), "/")
+			server = strings.TrimRight(server, "/")
 			if server == "" {
 				return errors.New("server is required")
 			}
@@ -92,7 +87,6 @@ func authCmd() *cobra.Command {
 			}
 		},
 	}
-	login.Flags().StringVar(&server, "server", "", "server URL")
 	login.Flags().StringVar(&name, "name", "", "device name (default: hostname)")
 	login.Flags().StringVar(&token, "token", "", "access token created in the WebUI (skips device approval)")
 

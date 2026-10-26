@@ -88,16 +88,17 @@ go install github.com/jerrita/qcfg/cmd/qcfg@latest
 ## 使用
 
 登录：终端显示用户码，在 WebUI 的 `/activate` 页面输入并批准，可修改设备名与可访问项目。
+服务端地址仅通过手动编辑 `~/.config/qcfg/config.toml` 的 `server` 字段设置。
 设备和 PAT 归属于操作用户，访问范围受该用户的项目权限限制；用户权限收回后，已有会话、设备和 PAT 同步生效。
 
 ```sh
-qcfg auth login --server https://cfg.example.com
+qcfg auth login
 ```
 
 脚本或无法走审批流程的场景，可在 WebUI 的 Tokens 页创建 PAT 后直接登录，跳过设备审批：
 
 ```sh
-qcfg auth login --server https://cfg.example.com --token qcfg_pat_xxx
+qcfg auth login --token qcfg_pat_xxx
 ```
 
 在一台设备上添加文件（普通用户需先由管理员创建并授权项目；管理员的设备在项目不存在时自动创建）：
