@@ -65,7 +65,7 @@ Traefik 提供 HTTPS、qcfg 使用 HTTP 时可沿用现有部署。qcfg 自动�
 
 ## 安装客户端
 
-一键安装最新 release（Linux x64/arm64、macOS arm64），默认安装到 `~/.local/bin`，可用 `QCFG_INSTALL_DIR` 指定：
+一键安装最新 release（Linux x64/arm64/riscv64gc、macOS arm64），默认安装到 `~/.local/bin`，可用 `QCFG_INSTALL_DIR` 指定：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/jerrita/qcfg/master/scripts/install.sh | sh

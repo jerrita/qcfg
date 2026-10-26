@@ -13,6 +13,7 @@ esac
 case $(uname -m) in
   x86_64 | amd64) arch=amd64 ;;
   aarch64 | arm64) arch=arm64 ;;
+  riscv64 | riscv64gc) arch=riscv64 ;;
   *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 if [ "$os/$arch" = darwin/amd64 ]; then
