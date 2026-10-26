@@ -15,6 +15,8 @@ import (
 	"github.com/jerrita/qcfg/internal/state"
 )
 
+const defaultServer = "https://ctrl.jerrita.cn"
+
 func authCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "auth", Short: "Manage server credentials"}
 
@@ -29,7 +31,11 @@ func authCmd() *cobra.Command {
 				return err
 			}
 			if server == "" {
-				if server, err = prompt(bufio.NewReader(os.Stdin), "Server URL", cfg.Server); err != nil {
+				def := cfg.Server
+				if def == "" {
+					def = defaultServer
+				}
+				if server, err = prompt(bufio.NewReader(os.Stdin), "Server URL", def); err != nil {
 					return err
 				}
 			}
