@@ -107,7 +107,7 @@ func New(st *store.Store, opts Options) http.Handler {
 		inFlight: map[string]int{},
 		verify:   make(chan struct{}, maxVerifies),
 	}
-	for _, p := range []string{"login", "register", "account", "users", "user", "projects", "project", "file", "history", "devices", "device", "tokens", "token", "activate"} {
+	for _, p := range []string{"login", "register", "account", "users", "user", "projects", "project", "file", "history", "devices", "device", "tokens", "token", "activate", "activity"} {
 		w.pages[p] = template.Must(template.New("layout.html").Funcs(funcs).
 			ParseFS(templateFS, "templates/layout.html", "templates/scope.html", "templates/"+p+".html"))
 	}
@@ -123,6 +123,7 @@ func New(st *store.Store, opts Options) http.Handler {
 	auth := http.NewServeMux()
 	auth.HandleFunc("POST /logout", w.logout)
 	auth.HandleFunc("GET /account", w.accountPage)
+	auth.HandleFunc("GET /activity", w.activityPage)
 	auth.HandleFunc("POST /account/password", w.changePassword)
 	auth.HandleFunc("GET /users", w.admin(w.usersPage))
 	auth.HandleFunc("POST /users", w.admin(w.createUser))
@@ -223,8 +224,30 @@ func (w *Web) requireSession(next http.Handler) http.Handler {
 				return
 			}
 		}
-		next.ServeHTTP(rw, r.WithContext(withSession(r, s)))
+		if r.Method != http.MethodPost {
+			next.ServeHTTP(rw, r.WithContext(withSession(r, s)))
+			return
+		}
+		response := &store.ActivityResponse{ResponseWriter: rw}
+		next.ServeHTTP(response, r.WithContext(withSession(r, s)))
+		if response.Status == 0 {
+			response.Status = http.StatusOK
+		}
+		if err := w.store.RecordActivity(store.Activity{UserID: s.user.ID, UserName: s.user.Name, Source: "web", Method: r.Method, Path: r.URL.Path, Status: response.Status}); err != nil {
+			log.Printf("record activity: %v", err)
+		}
 	})
+}
+
+func (w *Web) activityPage(rw http.ResponseWriter, r *http.Request) {
+	s, _ := sessionFrom(r)
+	activities, err := w.store.ListActivity(s.user.ID, s.user.Admin)
+	if err != nil {
+		log.Printf("list activity: %v", err)
+		http.Error(rw, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.render(rw, r, "activity", "Activity", map[string]any{"Activities": activities})
 }
 
 func sameToken(a, b string) bool { return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1 }

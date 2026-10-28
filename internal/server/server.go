@@ -65,7 +65,14 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			writeErr(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, p)))
+		rw := &store.ActivityResponse{ResponseWriter: w}
+		next.ServeHTTP(rw, r.WithContext(context.WithValue(r.Context(), ctxKey{}, p)))
+		if rw.Status == 0 {
+			rw.Status = http.StatusOK
+		}
+		if err := s.store.RecordActivity(store.Activity{UserID: p.User.ID, UserName: p.User.Name, Source: p.Name, Method: r.Method, Path: r.URL.Path, Status: rw.Status}); err != nil {
+			log.Printf("record activity: %v", err)
+		}
 	})
 }
 

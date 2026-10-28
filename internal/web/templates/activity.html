@@ -1,0 +1,12 @@
+{{define "content"}}
+<h1>Activity</h1>
+<p class="muted">Latest 100 authenticated API calls and Web actions.</p>
+<table>
+  <tr><th>Time</th><th>User</th><th>Source</th><th>Method</th><th>Path</th><th>Status</th></tr>
+  {{range .Activities}}
+  <tr><td>{{time .CreatedAt}}</td><td>{{.UserName}}</td><td>{{.Source}}</td><td>{{.Method}}</td><td>{{.Path}}</td><td>{{.Status}}</td></tr>
+  {{else}}
+  <tr><td colspan="6" class="muted">No activity yet</td></tr>
+  {{end}}
+</table>
+{{end}}

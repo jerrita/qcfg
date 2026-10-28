@@ -128,6 +128,16 @@ CREATE TABLE IF NOT EXISTS setting (
 	key   TEXT PRIMARY KEY,
 	value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS activity (
+	id INTEGER PRIMARY KEY,
+	user_id INTEGER NOT NULL,
+	user_name TEXT NOT NULL,
+	source TEXT NOT NULL,
+	method TEXT NOT NULL,
+	path TEXT NOT NULL,
+	status INTEGER NOT NULL,
+	created_at INTEGER NOT NULL
+);
 `
 
 func Open(path string, key []byte) (*Store, error) {
